@@ -1,0 +1,35 @@
+[package]
+name = "simpleplayer-windows"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Simple Player for Windows: local library + Simple Player Web Server, with Discord Rich Presence"
+
+[[bin]]
+name = "SimplePlayer"
+path = "src/main.rs"
+
+[dependencies]
+slint = { version = "1.18", features = ["raw-window-handle-06", "unstable-winit-030"] }
+raw-window-handle = "0.6"
+symphonia = { version = "0.5", features = ["all"] }
+cpal = "0.15"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+lofty = "0.22"
+walkdir = "2"
+dirs = "6"
+rfd = "0.15"
+
+[target.'cfg(windows)'.dependencies]
+souvlaki = "0.8"
+
+[build-dependencies]
+slint-build = "1.18"
+winresource = "0.1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

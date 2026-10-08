@@ -1,0 +1,530 @@
+// Shared look and building blocks for the main window and the detached player.
+
+import { ListView } from "std-widgets.slint";
+import { Icon } from "icons.slint";
+
+export struct LyricLine {
+    text: string,
+    timed: bool,
+}
+
+export global Palette {
+    in-out property <bool> light: false;
+    // surfaces (pure greys, follow the light/dark setting)
+    out property <color> bg: light ? #f1f1f2 : #0f1011;
+    out property <color> rail: light ? #e8e8ea : #141516;
+    out property <color> surface: light ? #f9f9fa : #17181a;
+    out property <color> raised: light ? #ffffff : #1f2123;
+    out property <color> titlebar: light ? #e3e3e6 : #0b0c0d;
+    out property <color> line: light ? #dadadd : #2a2c2f;
+    out property <color> hover: light ? #e2e2e5 : #232528;
+    out property <color> press: light ? #d6d6da : #2c2f32;
+    // text
+    out property <color> text: light ? #222325 : #e6e7e9;
+    out property <color> strong: light ? #111213 : #f7f7f8;
+    out property <color> muted: light ? #64666b : #8d9095;
+    out property <color> faint: light ? #9a9ca1 : #5d6065;
+    // accent (amber)
+    out property <color> accent: light ? #cf6f26 : #f2a65a;
+    out property <color> accent-hover: light ? #b85f1c : #ffb872;
+    out property <color> accent-text: light ? #ffffff : #1b1206;
+    out property <color> accent-soft: light ? #cf6f261c : #f2a65a1c;
+    out property <color> accent-line: light ? #cf6f2666 : #f2a65a55;
+    // cover placeholder: black/white gradient
+    out property <color> art-a: light ? #fbfbfc : #2c2e31;
+    out property <color> art-b: light ? #d3d4d8 : #111213;
+    out property <color> art-icon: light ? #a3a5aa : #4e5156;
+    // misc
+    out property <color> track: light ? #d2d3d7 : #303236;
+    out property <color> scrim: light ? #1a1a1a59 : #000000a6;
+    out property <color> close-hover: #c42b1c;
+}
+
+/* ---------------- building blocks ---------------- */
+
+export component Glyph inherits Rectangle {
+    in property <string> icon;
+    in property <length> size: 32px;
+    in property <length> icon-size: 18px;
+    in property <bool> active: false;
+    callback clicked();
+    width: size;
+    height: size;
+    border-radius: self.width / 2;
+    background: root.active ? Palette.accent-soft : (ta.pressed ? Palette.press : (ta.has-hover ? Palette.hover : transparent));
+    Icon {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        name: root.icon;
+        size: root.icon-size;
+        color: root.active ? Palette.accent : (ta.has-hover ? Palette.strong : Palette.muted);
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component Pill inherits Rectangle {
+    in property <string> label;
+    in property <string> icon;
+    in property <bool> primary: false;
+    callback clicked();
+    height: 32px;
+    border-radius: 16px;
+    background: root.primary
+        ? (ta.has-hover ? Palette.accent-hover : Palette.accent)
+        : (ta.pressed ? Palette.press : (ta.has-hover ? Palette.hover : Palette.raised));
+    border-width: root.primary ? 0px : 1px;
+    border-color: Palette.line;
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 16px;
+        spacing: 6px;
+        alignment: center;
+        if root.icon != "": VerticalLayout {
+            alignment: center;
+            Icon {
+                name: root.icon;
+                size: 16px;
+                color: root.primary ? Palette.accent-text : Palette.text;
+            }
+        }
+        Text {
+            text: root.label;
+            color: root.primary ? Palette.accent-text : Palette.strong;
+            font-size: 12px;
+            font-weight: 600;
+            vertical-alignment: TextVerticalAlignment.center;
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component Toggle inherits Rectangle {
+    in-out property <bool> checked;
+    callback toggled(bool);
+    width: 40px;
+    height: 22px;
+    border-radius: 11px;
+    background: root.checked ? Palette.accent : Palette.track;
+    animate background { duration: 140ms; }
+    Rectangle {
+        width: 16px;
+        height: 16px;
+        y: 3px;
+        x: root.checked ? root.width - 19px : 3px;
+        border-radius: 8px;
+        background: root.checked ? Palette.accent-text : Palette.muted;
+        animate x { duration: 140ms; easing: ease-out; }
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.checked = !root.checked;
+            root.toggled(root.checked);
+        }
+    }
+}
+
+// Horizontal slider used for seeking and volume. `value` is 0..1.
+export component Slider inherits Rectangle {
+    in property <float> value;
+    in property <length> thickness: 4px;
+    callback moving(float);
+    callback committed(float);
+    property <float> live: clamp(ta.mouse-x / max(1px, self.width), 0, 1);
+    property <float> shown: ta.pressed ? self.live : clamp(root.value, 0, 1);
+    // One look at all times (the old "hover" look): thicker bar, accent fill, visible thumb.
+    property <bool> hot: true;
+    height: 18px;
+    Rectangle {
+        y: (parent.height - self.height) / 2;
+        height: root.hot ? root.thickness + 2px : root.thickness;
+        border-radius: self.height / 2;
+        background: Palette.track;
+        Rectangle {
+            x: 0;
+            width: parent.width * root.shown;
+            border-radius: parent.border-radius;
+            background: root.hot ? Palette.accent : Palette.text;
+        }
+    }
+    Rectangle {
+        visible: root.hot;
+        width: 14px;
+        height: 14px;
+        border-radius: 7px;
+        background: Palette.strong;
+        border-width: 3px;
+        border-color: Palette.accent;
+        x: clamp(parent.width * root.shown - 7px, -7px, parent.width - 7px);
+        y: (parent.height - 14px) / 2;
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        moved => {
+            if (self.pressed) { root.moving(root.live); }
+        }
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.up && e.button == PointerEventButton.left) {
+                root.committed(root.live);
+            }
+        }
+    }
+}
+
+export component SearchBox inherits Rectangle {
+    callback edited(string);
+    height: 34px;
+    border-radius: self.height / 2;
+    background: Palette.surface;
+    border-width: 1px;
+    border-color: input.has-focus ? Palette.accent-line : Palette.line;
+    Icon { x: 12px; y: (parent.height - 16px) / 2; name: "search"; size: 16px; color: input.has-focus ? Palette.accent : Palette.faint; line: 2px; }
+    input := TextInput {
+        x: 36px;
+        width: parent.width - 48px;
+        height: parent.height;
+        color: Palette.text;
+        font-size: 12px;
+        single-line: true;
+        vertical-alignment: TextVerticalAlignment.center;
+        edited => { root.edited(self.text); }
+    }
+    Text {
+        x: 36px;
+        visible: input.text == "";
+        text: "搜尋歌曲、歌手、專輯";
+        color: Palette.faint;
+        font-size: 12px;
+        height: parent.height;
+        vertical-alignment: TextVerticalAlignment.center;
+    }
+}
+
+export component Field inherits Rectangle {
+    in-out property <string> text <=> input.text;
+    in property <string> placeholder;
+    callback accepted(string);
+    height: 36px;
+    border-radius: 9px;
+    background: Palette.bg;
+    border-width: 1px;
+    border-color: input.has-focus ? Palette.accent-line : Palette.line;
+    input := TextInput {
+        x: 12px;
+        width: parent.width - 24px;
+        height: parent.height;
+        color: Palette.text;
+        font-size: 12px;
+        single-line: true;
+        vertical-alignment: TextVerticalAlignment.center;
+        accepted => { root.accepted(self.text); }
+    }
+    Text {
+        x: 12px;
+        width: parent.width - 24px;
+        visible: input.text == "";
+        text: root.placeholder;
+        color: Palette.faint;
+        font-size: 12px;
+        height: parent.height;
+        vertical-alignment: TextVerticalAlignment.center;
+        overflow: TextOverflow.elide;
+    }
+}
+
+export component Art inherits Rectangle {
+    in property <image> source;
+    in property <bool> has-image;
+    in property <length> radius: 8px;
+    border-radius: root.radius;
+    clip: true;
+    background: @linear-gradient(160deg, Palette.art-a 0%, Palette.art-b 100%);
+    if root.has-image: Image {
+        width: parent.width;
+        height: parent.height;
+        source: root.source;
+        image-fit: ImageFit.cover;
+    }
+    if !root.has-image: Icon {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        name: "note";
+        size: min(parent.width, parent.height) * 0.36;
+        color: Palette.art-icon;
+        line: 1.6px;
+    }
+}
+
+// Three bouncing bars that mark the playing row.
+export component Eq inherits Rectangle {
+    in property <bool> running;
+    in property <color> tint: Palette.accent;
+    width: 14px;
+    height: 14px;
+    property <float> t: root.running ? animation-tick() / 1ms : 0;
+    for k in [0, 1, 2]: Rectangle {
+        x: k * 5px;
+        width: 3px;
+        height: root.running ? 3px + 11px * abs(sin((root.t * 0.45 + k * 70) * 1deg)) : 4px + k * 3px;
+        y: root.height - self.height;
+        border-radius: 1.5px;
+        background: root.tint;
+    }
+}
+
+export component HeaderCell inherits Rectangle {
+    in property <string> label;
+    in property <int> column;
+    in property <int> sort-column;
+    in property <bool> sort-asc;
+    in property <TextHorizontalAlignment> align: TextHorizontalAlignment.left;
+    callback sort(int);
+    Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.label + (root.sort-column == root.column ? (root.sort-asc ? " ▲" : " ▼") : "");
+        color: root.sort-column == root.column ? Palette.accent : (ta.has-hover ? Palette.text : Palette.faint);
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.8px;
+        horizontal-alignment: root.align;
+        vertical-alignment: TextVerticalAlignment.center;
+        overflow: TextOverflow.elide;
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.sort(root.column); }
+    }
+}
+
+export component SectionLabel inherits Text {
+    color: Palette.faint;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+}
+
+// Windows-style caption button (minimize / maximize / close).
+export component WinButton inherits Rectangle {
+    in property <string> icon;
+    in property <bool> danger: false;
+    callback clicked();
+    width: 46px;
+    background: ta.pressed
+        ? (root.danger ? Palette.close-hover.darker(0.15) : Palette.press)
+        : (ta.has-hover ? (root.danger ? Palette.close-hover : Palette.hover) : transparent);
+    Icon {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        name: root.icon;
+        size: 16px;
+        line: 1.3px;
+        color: ta.has-hover && root.danger ? #ffffff : Palette.text;
+    }
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+// Invisible edges of a frameless window. Directions: 0 N, 1 NE, 2 E, 3 SE, 4 S, 5 SW, 6 W, 7 NW.
+export component ResizeBorders {
+    callback resize(int);
+    property <length> b: 5px;
+    TouchArea { x: root.b * 2; y: 0; width: root.width - root.b * 4; height: root.b; mouse-cursor: MouseCursor.n-resize;
+        pointer-event(e) => { if (e.kind == PointerEventKind.down) { root.resize(0); } } }
+    TouchArea { x: root.width - root.b * 2; y: 0; width: root.b * 2; height: root.b * 2; mouse-cursor: MouseCursor.ne-resize;
+        pointer-event(e) => { if (e.kind == PointerEventKind.down) { root.resize(1); } } }
+    TouchArea { x: root.width - root.b; y: root.b * 2; width: root.b; height: root.height - root.b * 4; mouse-cursor: MouseCursor.e-resize;
+        pointer-event(e) => { if (e.kind == PointerEventKind.down) { root.resize(2); } } }
+    TouchArea { x: root.width - root.b * 2; y: root.height - root.b * 2; width: root.b * 2; height: root.b * 2; mouse-cursor: MouseCursor.se-resize;
+        pointer-event(e) => { if (e.kind == PointerEventKind.down) { root.resize(3); } } }
+    TouchArea { x: root.b * 2; y: root.height - root.b; width: root.width - root.b * 4; height: root.b; mouse-cursor: MouseCursor.s-resize;
+        pointer-event(e) => { if (e.kind == PointerEventKind.down) { root.resize(4); } } }
+    TouchArea { x: 0; y: root.height - root.b * 2; width: root.b * 2; height: root.b * 2; mouse-cursor: MouseCursor.sw-resize;
+        pointer-event(e) => { if (e.kind == PointerEventKind.down) { root.resize(5); } } }
+    TouchArea { x: 0; y: root.b * 2; width: root.b; height: root.height - root.b * 4; mouse-cursor: MouseCursor.w-resize;
+        pointer-event(e) => { if (e.kind == PointerEventKind.down) { root.resize(6); } } }
+    TouchArea { x: 0; y: 0; width: root.b * 2; height: root.b * 2; mouse-cursor: MouseCursor.nw-resize;
+        pointer-event(e) => { if (e.kind == PointerEventKind.down) { root.resize(7); } } }
+}
+
+// Round accent play/pause button.
+export component PlayButton inherits Rectangle {
+    in property <bool> playing;
+    in property <length> size: 42px;
+    callback clicked();
+    width: root.size;
+    height: root.size;
+    border-radius: root.size / 2;
+    background: ta.has-hover ? Palette.accent-hover : Palette.accent;
+    Icon {
+        x: (parent.width - self.width) / 2 + (root.playing ? 0px : 1px);
+        y: (parent.height - self.height) / 2;
+        name: root.playing ? "pause" : "play";
+        size: root.size >= 46px ? 20px : 18px;
+        color: Palette.accent-text;
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Cover, track info and synced lyrics. Used in the main window and the detached player.
+export component NowPanel inherits Rectangle {
+    in property <image> cover-image;
+    in property <bool> has-cover;
+    in property <string> now-title;
+    in property <string> now-artist;
+    in property <string> now-album;
+    in property <string> now-detail;
+    in property <[LyricLine]> lyrics;
+    in property <int> active-lyric: -1;
+    in property <string> lyrics-state;
+    in property <length> art-size: 276px;
+    in property <length> pad: 22px;
+    // true while the next song is loading: content fades/slides out, a small loader shows up
+    in property <bool> switching: false;
+    callback lyric-clicked(int);
+    property <length> lyric-row: 40px;
+
+    changed active-lyric => {
+        if (root.active-lyric >= 0) {
+            lyric-list.content-y = min(0px, max(lyric-list.visible-height - lyric-list.content-height,
+                lyric-list.visible-height / 2 - (root.active-lyric + 0.5) * root.lyric-row));
+        }
+    }
+
+    VerticalLayout {
+        padding: root.pad;
+        padding-bottom: 8px;
+        spacing: 0px;
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: root.art-size;
+                height: root.art-size;
+                opacity: root.switching ? 0 : 1;
+                animate opacity { duration: 220ms; easing: ease-in-out; }
+                drop-shadow-blur: 24px;
+                drop-shadow-offset-y: 8px;
+                drop-shadow-color: root.has-cover ? #00000055 : transparent;
+                border-radius: 14px;
+                Art {
+                    x: root.switching ? -18px : 0px;
+                    animate x { duration: 240ms; easing: ease-out; }
+                    width: parent.width;
+                    height: parent.height;
+                    radius: 14px;
+                    source: root.cover-image;
+                    has-image: root.has-cover;
+                }
+            }
+        }
+        Rectangle {
+            opacity: root.switching ? 0 : 1;
+            animate opacity { duration: 200ms; easing: ease-in-out; }
+            VerticalLayout {
+                padding-top: 18px;
+                padding-bottom: 14px;
+                spacing: 4px;
+                Text { text: root.now-title; color: Palette.strong; font-size: 17px; font-weight: 700; overflow: TextOverflow.elide; }
+                Text { text: root.now-artist; color: Palette.accent; font-size: 12px; font-weight: 600; overflow: TextOverflow.elide; }
+                Text { text: root.now-album; color: Palette.muted; font-size: 11px; overflow: TextOverflow.elide; }
+                if root.now-detail != "": HorizontalLayout {
+                    padding-top: 6px;
+                    alignment: start;
+                    Rectangle {
+                        height: 20px;
+                        width: det.preferred-width + 16px;
+                        border-radius: 10px;
+                        background: Palette.raised;
+                        det := Text { text: root.now-detail; color: Palette.muted; font-size: 9px; font-weight: 600; letter-spacing: 0.8px; horizontal-alignment: TextHorizontalAlignment.center; vertical-alignment: TextVerticalAlignment.center; }
+                    }
+                }
+            }
+        }
+        HorizontalLayout {
+            height: 30px;
+            SectionLabel { text: "歌詞"; vertical-alignment: TextVerticalAlignment.center; }
+            Rectangle { horizontal-stretch: 1; }
+            SectionLabel { text: root.lyrics-state; font-size: 9px; vertical-alignment: TextVerticalAlignment.center; }
+        }
+        lyric-box := Rectangle {
+            vertical-stretch: 1;
+            opacity: root.switching ? 0 : 1;
+            animate opacity { duration: 200ms; easing: ease-in-out; }
+            // The list reaches into the right padding so its scrollbar sits clear of the
+            // active-line marker.
+            lyric-list := ListView {
+                x: 0;
+                width: lyric-box.width + root.pad - 4px;
+                animate content-y { duration: 320ms; easing: ease-out; }
+                for l[i] in root.lyrics: Rectangle {
+                    height: root.lyric-row;
+                    Text {
+                        x: 0;
+                        width: lyric-box.width - 8px;
+                        height: parent.height;
+                        text: l.text;
+                        wrap: TextWrap.word-wrap;
+                        overflow: TextOverflow.elide;
+                        color: i == root.active-lyric ? Palette.strong
+                            : (lta.has-hover && l.timed ? Palette.text : Palette.faint);
+                        font-size: i == root.active-lyric ? 15px : 12px;
+                        font-weight: i == root.active-lyric ? 700 : 400;
+                        vertical-alignment: TextVerticalAlignment.center;
+                        animate color { duration: 200ms; }
+                    }
+                    if i == root.active-lyric: Rectangle {
+                        x: lyric-box.width - 3px;
+                        y: 10px;
+                        width: 3px;
+                        height: parent.height - 20px;
+                        border-radius: 1.5px;
+                        background: Palette.accent;
+                    }
+                    lta := TouchArea {
+                        mouse-cursor: l.timed ? MouseCursor.pointer : MouseCursor.default;
+                        clicked => {
+                            if (l.timed) { root.lyric-clicked(i); }
+                        }
+                    }
+                }
+            }
+            if root.lyrics.length == 0: Text {
+                y: 24px;
+                width: parent.width;
+                text: "沒有可顯示的歌詞";
+                color: Palette.faint;
+                font-size: 11px;
+            }
+        }
+    }
+
+    // Small loader over the cover; only fades in when loading takes a while.
+    loader := Eq {
+        x: (root.width - self.width) / 2;
+        y: root.pad + root.art-size / 2 - self.height / 2;
+        running: root.switching;
+        tint: Palette.muted;
+        opacity: 0;
+    }
+    states [
+        loading when root.switching: {
+            loader.opacity: 1;
+            in {
+                animate loader.opacity { delay: 350ms; duration: 200ms; }
+            }
+            out {
+                animate loader.opacity { duration: 100ms; }
+            }
+        }
+    ]
+}

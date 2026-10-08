@@ -1,0 +1,892 @@
+// Simple Player for Windows — main window and the detachable player window.
+// Own design: custom title bar, a left rail, a card-style track list, a now-playing
+// column with large lyrics, and a floating transport dock. Every control is drawn here.
+
+import { ListView, AboutSlint } from "std-widgets.slint";
+import { Icon } from "icons.slint";
+import {
+    Palette, LyricLine, Glyph, Pill, Toggle, Slider, SearchBox, Field, Art, Eq, HeaderCell,
+    SectionLabel, WinButton, ResizeBorders, PlayButton, NowPanel
+} from "common.slint";
+
+export { Palette, LyricLine } from "common.slint";
+
+export struct SourceItem {
+    label: string,
+    count: string,
+    icon: string,
+    header: bool,
+}
+
+export struct TrackRow {
+    num: string,
+    title: string,
+    artist: string,
+    album: string,
+    format: string,
+    duration: string,
+    origin: string,
+    playing: bool,
+}
+
+export component MainWindow inherits Window {
+    title: "Simple Player";
+    no-frame: true;
+    always-on-top: root.pinned;
+    preferred-width: 1300px;
+    preferred-height: 820px;
+    min-width: 1000px;
+    min-height: 620px;
+    background: Palette.bg;
+    default-font-size: 12px;
+    default-font-family: "Segoe UI";
+
+    // sidebar
+    in property <[SourceItem]> sources;
+    in-out property <int> selected-source: -1;
+    callback source-clicked(int);
+
+    // list
+    in property <[TrackRow]> tracks;
+    in-out property <int> selected-row: -1;
+    in property <int> sort-column: -1;
+    in property <bool> sort-asc: true;
+    in property <string> list-title: "全部歌曲";
+    in property <string> list-info;
+    in property <bool> empty-library: false;
+    callback row-activated(int);
+    callback sort-by(int);
+    callback search-changed(string);
+
+    // now playing
+    in property <string> now-title: "尚未播放";
+    in property <string> now-artist: "選一首歌開始播放";
+    in property <string> now-album;
+    in property <string> now-detail;
+    in property <image> cover-image;
+    in property <bool> has-cover: false;
+    in property <bool> playing: false;
+    in property <float> progress: 0;
+    in property <string> position-text: "0:00";
+    in property <string> duration-text: "0:00";
+    in-out property <float> volume: 0.8;
+    property <float> volume-before-mute: 0.8;
+    in property <[LyricLine]> lyrics;
+    in property <int> active-lyric: -1;
+    in property <string> lyrics-state: "等待播放";
+    in property <bool> switching: false;
+    callback toggle-play();
+    callback prev();
+    callback next();
+    callback seek(float);
+    callback volume-changed(float);
+    callback lyric-clicked(int);
+
+    // settings / about
+    in-out property <bool> show-settings: false;
+    in-out property <bool> show-about: false;
+    in-out property <string> server-url;
+    in-out property <string> public-url;
+    in property <[string]> folders;
+    in-out property <bool> discord-enabled: true;
+    in property <string> server-status;
+    in property <string> discord-status;
+    in property <string> status-text;
+    callback save-server(string);
+    callback save-public-url(string);
+    callback add-folder();
+    callback remove-folder(int);
+    callback rescan();
+    callback discord-toggled(bool);
+    callback theme-toggled(bool);
+
+    // custom title bar / frameless window
+    in property <bool> maximized: false;
+    in-out property <bool> pinned: false;
+    in-out property <bool> detached: false;
+    callback pin-toggled(bool);
+    callback detach-toggled(bool);
+    callback win-drag();
+    callback win-minimize();
+    callback win-maximize();
+    callback win-close();
+    callback win-resize(int); // 0 N, 1 NE, 2 E, 3 SE, 4 S, 5 SW, 6 W, 7 NW
+
+
+    VerticalLayout {
+        /* ---------- title bar ---------- */
+        Rectangle {
+            height: 42px;
+            background: Palette.titlebar;
+            TouchArea {
+                // Start the system move only once the mouse moves, so double-click still works.
+                moved => {
+                    if (self.pressed) { root.win-drag(); }
+                }
+                double-clicked => { root.win-maximize(); }
+            }
+            HorizontalLayout {
+                padding-left: 14px;
+                spacing: 4px;
+                VerticalLayout {
+                    alignment: center;
+                    Image { width: 20px; height: 20px; source: @image-url("../assets/icon-small.png"); }
+                }
+                Text {
+                    text: "Simple Player";
+                    font-size: 12px;
+                    font-weight: 600;
+                    color: Palette.text;
+                    vertical-alignment: TextVerticalAlignment.center;
+                }
+                Rectangle { horizontal-stretch: 1; min-width: 12px; }
+                VerticalLayout {
+                    alignment: center;
+                    SearchBox {
+                        width: 320px;
+                        height: 30px;
+                        edited(t) => { root.search-changed(t); }
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; min-width: 12px; }
+                VerticalLayout {
+                    alignment: center;
+                    Glyph {
+                        size: 30px;
+                        icon-size: 18px;
+                        icon: Palette.light ? "moon" : "sun";
+                        clicked => {
+                            Palette.light = !Palette.light;
+                            root.theme-toggled(Palette.light);
+                        }
+                    }
+                }
+                VerticalLayout { alignment: center; Glyph { size: 30px; icon-size: 18px; icon: "refresh"; clicked => { root.rescan(); } } }
+                VerticalLayout { alignment: center; Glyph { size: 30px; icon-size: 18px; icon: "settings"; active: root.show-settings; clicked => { root.show-settings = true; } } }
+                VerticalLayout { alignment: center; Glyph { size: 30px; icon-size: 18px; icon: "info"; active: root.show-about; clicked => { root.show-about = true; } } }
+                Rectangle { width: 6px; }
+                VerticalLayout {
+                    alignment: center;
+                    Glyph {
+                        size: 30px;
+                        icon-size: 18px;
+                        icon: "detach";
+                        active: root.detached;
+                        clicked => {
+                            root.detached = !root.detached;
+                            root.detach-toggled(root.detached);
+                        }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    Glyph {
+                        size: 30px;
+                        icon-size: 18px;
+                        icon: "pin";
+                        active: root.pinned;
+                        clicked => {
+                            root.pinned = !root.pinned;
+                            root.pin-toggled(root.pinned);
+                        }
+                    }
+                }
+                Rectangle { width: 10px; }
+                Rectangle {
+                    width: 1px;
+                    Rectangle { y: 12px; height: parent.height - 24px; background: Palette.line; }
+                }
+                Rectangle { width: 6px; }
+                WinButton { icon: "win-min"; clicked => { root.win-minimize(); } }
+                WinButton { icon: root.maximized ? "win-restore" : "win-max"; clicked => { root.win-maximize(); } }
+                WinButton { icon: "win-close"; danger: true; clicked => { root.win-close(); } }
+            }
+        }
+
+        HorizontalLayout {
+            vertical-stretch: 1;
+
+            /* ---------- left rail ---------- */
+            Rectangle {
+                width: 236px;
+                background: Palette.rail;
+                VerticalLayout {
+                    padding-top: 6px;
+                    ListView {
+                        vertical-stretch: 1;
+                        for s[i] in root.sources: Rectangle {
+                            height: s.header ? 34px : 38px;
+                            if !s.header: Rectangle {
+                                x: 10px;
+                                width: parent.width - 20px;
+                                y: 2px;
+                                height: parent.height - 4px;
+                                border-radius: 10px;
+                                background: i == root.selected-source ? Palette.accent-soft : (sta.has-hover ? Palette.hover : transparent);
+                            }
+                            HorizontalLayout {
+                                padding-left: s.header ? 20px : 20px;
+                                padding-right: 20px;
+                                padding-top: s.header ? 14px : 0px;
+                                spacing: 10px;
+                                if !s.header: VerticalLayout {
+                                    alignment: center;
+                                    Icon {
+                                        name: s.icon;
+                                        size: 18px;
+                                        color: i == root.selected-source ? Palette.accent : Palette.muted;
+                                        line: 1.7px;
+                                    }
+                                }
+                                Text {
+                                    horizontal-stretch: 1;
+                                    text: s.label;
+                                    color: s.header ? Palette.faint : (i == root.selected-source ? Palette.strong : Palette.text);
+                                    font-size: s.header ? 10px : 12px;
+                                    font-weight: s.header ? 700 : (i == root.selected-source ? 600 : 400);
+                                    letter-spacing: s.header ? 1.2px : 0px;
+                                    vertical-alignment: TextVerticalAlignment.center;
+                                    overflow: TextOverflow.elide;
+                                }
+                                if !s.header: Text {
+                                    text: s.count;
+                                    color: i == root.selected-source ? Palette.accent : Palette.faint;
+                                    font-size: 10px;
+                                    vertical-alignment: TextVerticalAlignment.center;
+                                }
+                            }
+                            sta := TouchArea {
+                                enabled: !s.header;
+                                mouse-cursor: pointer;
+                                clicked => { root.source-clicked(i); }
+                            }
+                        }
+                    }
+                }
+            }
+
+            /* ---------- library ---------- */
+            Rectangle {
+                horizontal-stretch: 1;
+                background: Palette.bg;
+                VerticalLayout {
+                    padding-left: 22px;
+                    padding-right: 18px;
+                    padding-top: 12px;
+                    // header
+                    HorizontalLayout {
+                        height: 62px;
+                        spacing: 14px;
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            alignment: center;
+                            spacing: 4px;
+                            Text { text: root.list-title; font-size: 24px; font-weight: 700; color: Palette.strong; overflow: TextOverflow.elide; }
+                            Text { text: root.list-info; font-size: 11px; color: Palette.muted; }
+                        }
+                    }
+                    // column header
+                    HorizontalLayout {
+                        height: 34px;
+                        padding-left: 10px;
+                        padding-right: 14px;
+                        spacing: 12px;
+                        HeaderCell { width: 30px; label: "#"; column: 0; align: TextHorizontalAlignment.center; sort-column: root.sort-column; sort-asc: root.sort-asc; sort(c) => { root.sort-by(c); } }
+                        HeaderCell { preferred-width: 0px; min-width: 0px; horizontal-stretch: 5; label: "標題"; column: 1; sort-column: root.sort-column; sort-asc: root.sort-asc; sort(c) => { root.sort-by(c); } }
+                        HeaderCell { preferred-width: 0px; min-width: 0px; horizontal-stretch: 3; label: "專輯"; column: 3; sort-column: root.sort-column; sort-asc: root.sort-asc; sort(c) => { root.sort-by(c); } }
+                        HeaderCell { width: 54px; label: "格式"; column: 5; align: TextHorizontalAlignment.center; sort-column: root.sort-column; sort-asc: root.sort-asc; sort(c) => { root.sort-by(c); } }
+                        HeaderCell { width: 52px; label: "時長"; column: 4; align: TextHorizontalAlignment.right; sort-column: root.sort-column; sort-asc: root.sort-asc; sort(c) => { root.sort-by(c); } }
+                        HeaderCell { width: 22px; label: ""; column: 6; sort-column: root.sort-column; sort-asc: root.sort-asc; sort(c) => { root.sort-by(c); } }
+                    }
+                    Rectangle { height: 1px; background: Palette.line; }
+                    Rectangle {
+                        vertical-stretch: 1;
+                        ListView {
+                            for row[i] in root.tracks: Rectangle {
+                                height: 52px;
+                                Rectangle {
+                                    y: 2px;
+                                    height: parent.height - 4px;
+                                    border-radius: 10px;
+                                    background: row.playing ? Palette.accent-soft
+                                        : (i == root.selected-row ? Palette.press : (rta.has-hover ? Palette.hover : transparent));
+                                }
+                                HorizontalLayout {
+                                    padding-left: 10px;
+                                    padding-right: 14px;
+                                    spacing: 12px;
+                                    Rectangle {
+                                        width: 30px;
+                                        if row.playing: Eq {
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
+                                            running: root.playing;
+                                        }
+                                        if !row.playing: Text {
+                                            width: parent.width;
+                                            height: parent.height;
+                                            text: row.num;
+                                            color: Palette.faint;
+                                            font-size: 11px;
+                                            horizontal-alignment: TextHorizontalAlignment.center;
+                                            vertical-alignment: TextVerticalAlignment.center;
+                                        }
+                                    }
+                                    VerticalLayout {
+                                        preferred-width: 0px;
+                                        min-width: 0px;
+                                        horizontal-stretch: 5;
+                                        alignment: center;
+                                        spacing: 3px;
+                                        Text { text: row.title; color: row.playing ? Palette.accent : Palette.strong; font-size: 13px; font-weight: row.playing ? 650 : 500; overflow: TextOverflow.elide; }
+                                        Text { text: row.artist; color: Palette.muted; font-size: 11px; overflow: TextOverflow.elide; }
+                                    }
+                                    Text { preferred-width: 0px; min-width: 0px; horizontal-stretch: 3; text: row.album; color: Palette.muted; font-size: 11px; vertical-alignment: TextVerticalAlignment.center; overflow: TextOverflow.elide; }
+                                    Rectangle {
+                                        width: 54px;
+                                        if row.format != "": Rectangle {
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
+                                            width: fmt.preferred-width + 12px;
+                                            height: 18px;
+                                            border-radius: 9px;
+                                            border-width: 1px;
+                                            border-color: Palette.line;
+                                            fmt := Text {
+                                                text: row.format;
+                                                color: Palette.muted;
+                                                font-size: 9px;
+                                                font-weight: 600;
+                                                letter-spacing: 0.6px;
+                                                horizontal-alignment: TextHorizontalAlignment.center;
+                                                vertical-alignment: TextVerticalAlignment.center;
+                                            }
+                                        }
+                                    }
+                                    Text { width: 52px; text: row.duration; color: Palette.muted; font-size: 11px; horizontal-alignment: TextHorizontalAlignment.right; vertical-alignment: TextVerticalAlignment.center; }
+                                    Rectangle {
+                                        width: 22px;
+                                        Icon {
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
+                                            name: row.origin;
+                                            size: 16px;
+                                            color: Palette.faint;
+                                            line: 1.6px;
+                                        }
+                                    }
+                                }
+                                rta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    // One click plays (double-clicks are hard with a drifting VR cursor).
+                                    clicked => {
+                                        root.selected-row = i;
+                                        root.row-activated(i);
+                                    }
+                                }
+                            }
+                        }
+
+                        // empty state
+                        if root.empty-library: Rectangle {
+                            background: Palette.bg;
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 12px;
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Image { width: 72px; height: 72px; source: @image-url("../assets/icon.png"); }
+                                }
+                                Text { text: "這裡還沒有音樂"; color: Palette.strong; font-size: 16px; font-weight: 700; horizontal-alignment: TextHorizontalAlignment.center; }
+                                Text { text: "加入電腦裡的音樂資料夾，或連上你的 Simple Player 伺服器。"; color: Palette.muted; horizontal-alignment: TextHorizontalAlignment.center; }
+                                HorizontalLayout {
+                                    alignment: center;
+                                    spacing: 8px;
+                                    padding-top: 4px;
+                                    Pill { label: "加入資料夾"; icon: "folder"; primary: true; clicked => { root.add-folder(); } }
+                                    Pill { label: "連線伺服器"; icon: "cloud"; clicked => { root.show-settings = true; } }
+                                }
+                            }
+                        }
+                    }
+                    Text {
+                        height: 26px;
+                        text: root.status-text;
+                        color: Palette.faint;
+                        font-size: 10px;
+                        vertical-alignment: TextVerticalAlignment.center;
+                        overflow: TextOverflow.elide;
+                    }
+                }
+            }
+
+            /* ---------- now playing (slides away when detached) ---------- */
+            Rectangle {
+                width: root.detached ? 0px : 320px;
+                animate width { duration: 300ms; easing: ease-in-out; }
+                clip: true;
+                background: Palette.surface;
+                NowPanel {
+                    x: 0;
+                    width: 320px;
+                    height: parent.height;
+                    opacity: root.detached ? 0 : 1;
+                    animate opacity { duration: 200ms; }
+                    cover-image: root.cover-image;
+                    has-cover: root.has-cover;
+                    now-title: root.now-title;
+                    now-artist: root.now-artist;
+                    now-album: root.now-album;
+                    now-detail: root.now-detail;
+                    lyrics: root.lyrics;
+                    active-lyric: root.active-lyric;
+                    lyrics-state: root.lyrics-state;
+                    switching: root.switching;
+                    lyric-clicked(i) => { root.lyric-clicked(i); }
+                }
+            }
+        }
+
+        /* ---------- transport dock ---------- */
+        Rectangle {
+            height: 92px;
+            background: Palette.bg;
+            Rectangle {
+                x: 12px;
+                y: 8px;
+                width: parent.width - 24px;
+                height: parent.height - 18px;
+                border-radius: 18px;
+                background: Palette.raised;
+                border-width: 1px;
+                border-color: Palette.line;
+                drop-shadow-blur: 18px;
+                drop-shadow-offset-y: 4px;
+                drop-shadow-color: #0000002e;
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 18px;
+                    spacing: 18px;
+
+                    HorizontalLayout {
+                        width: 290px;
+                        spacing: 12px;
+                        VerticalLayout {
+                            alignment: center;
+                            Art {
+                                width: 52px;
+                                height: 52px;
+                                radius: 12px;
+                                opacity: root.switching ? 0 : 1;
+                                animate opacity { duration: 220ms; easing: ease-in-out; }
+                                source: root.cover-image;
+                                has-image: root.has-cover;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 4px;
+                            Text { text: root.now-title; color: Palette.strong; font-size: 13px; font-weight: 650; overflow: TextOverflow.elide;
+                                opacity: root.switching ? 0 : 1; animate opacity { duration: 200ms; } }
+                            Text { text: root.now-artist; color: Palette.muted; font-size: 11px; overflow: TextOverflow.elide;
+                                opacity: root.switching ? 0 : 1; animate opacity { duration: 200ms; } }
+                        }
+                    }
+
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        alignment: center;
+                        spacing: 2px;
+                        HorizontalLayout {
+                            alignment: center;
+                            spacing: 18px;
+                            VerticalLayout { alignment: center; Glyph { icon: "prev"; icon-size: 16px; size: 34px; clicked => { root.prev(); } } }
+                            PlayButton { playing: root.playing; clicked => { root.toggle-play(); } }
+                            VerticalLayout { alignment: center; Glyph { icon: "next"; icon-size: 16px; size: 34px; clicked => { root.next(); } } }
+                        }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            Text { width: 42px; text: root.position-text; color: Palette.muted; font-size: 10px; horizontal-alignment: TextHorizontalAlignment.right; vertical-alignment: TextVerticalAlignment.center; }
+                            Slider {
+                                horizontal-stretch: 1;
+                                value: root.progress;
+                                committed(v) => { root.seek(v); }
+                            }
+                            Text { width: 42px; text: root.duration-text; color: Palette.muted; font-size: 10px; vertical-alignment: TextVerticalAlignment.center; }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        width: 190px;
+                        alignment: end;
+                        spacing: 8px;
+                        VerticalLayout {
+                            alignment: center;
+                            Glyph {
+                                icon: root.volume <= 0.001 ? "mute" : "volume";
+                                size: 30px;
+                                icon-size: 18px;
+                                clicked => {
+                                    if (root.volume > 0.001) {
+                                        root.volume-before-mute = root.volume;
+                                        root.volume = 0;
+                                    } else {
+                                        root.volume = max(0.05, root.volume-before-mute);
+                                    }
+                                    root.volume-changed(root.volume);
+                                }
+                            }
+                        }
+                        Rectangle {
+                            width: 120px;
+                            Slider {
+                                y: (parent.height - self.height) / 2;
+                                width: parent.width;
+                                value: root.volume;
+                                moving(v) => { root.volume = v; root.volume-changed(v); }
+                                committed(v) => { root.volume = v; root.volume-changed(v); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /* ---------- resize borders (frameless window) ---------- */
+    if !root.maximized: ResizeBorders {
+        width: parent.width;
+        height: parent.height;
+        resize(d) => { root.win-resize(d); }
+    }
+
+    /* ---------- settings ---------- */
+    if root.show-settings: Rectangle {
+        background: Palette.scrim;
+        TouchArea { clicked => { root.show-settings = false; } }
+        Rectangle {
+            width: 600px;
+            height: min(parent.height - 40px, 640px);
+            border-radius: 18px;
+            background: Palette.surface;
+            border-width: 1px;
+            border-color: Palette.line;
+            drop-shadow-blur: 40px;
+            drop-shadow-color: #00000070;
+            TouchArea {}
+            VerticalLayout {
+                padding: 24px;
+                spacing: 10px;
+                HorizontalLayout {
+                    Text { text: "設定"; font-size: 20px; font-weight: 700; color: Palette.strong; vertical-alignment: TextVerticalAlignment.center; }
+                    Rectangle { horizontal-stretch: 1; }
+                    VerticalLayout { alignment: center; Glyph { icon: "close"; clicked => { root.show-settings = false; } } }
+                }
+
+                // server
+                Rectangle {
+                    border-radius: 12px;
+                    background: Palette.raised;
+                    VerticalLayout {
+                        padding: 14px;
+                        spacing: 8px;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            VerticalLayout { alignment: center; Icon { name: "cloud"; size: 16px; color: Palette.accent; } }
+                            SectionLabel { text: "SIMPLE PLAYER 伺服器"; vertical-alignment: TextVerticalAlignment.center; }
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Field {
+                                horizontal-stretch: 1;
+                                text <=> root.server-url;
+                                placeholder: "例如 http://192.168.0.10:55555";
+                                accepted(t) => { root.save-server(t); }
+                            }
+                            VerticalLayout { alignment: center; Pill { label: "連線"; primary: true; clicked => { root.save-server(root.server-url); } } }
+                        }
+                        Text { text: root.server-status; color: Palette.muted; font-size: 11px; }
+                    }
+                }
+
+                // folders
+                Rectangle {
+                    border-radius: 12px;
+                    background: Palette.raised;
+                    VerticalLayout {
+                        padding: 14px;
+                        spacing: 8px;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            VerticalLayout { alignment: center; Icon { name: "folder"; size: 16px; color: Palette.accent; } }
+                            SectionLabel { text: "本地音樂資料夾（子資料夾會成為歌單）"; vertical-alignment: TextVerticalAlignment.center; }
+                        }
+                        Rectangle {
+                            height: 120px;
+                            border-radius: 9px;
+                            background: Palette.bg;
+                            ListView {
+                                for f[i] in root.folders: Rectangle {
+                                    height: 36px;
+                                    background: fta.has-hover ? Palette.hover : transparent;
+                                    fta := TouchArea {}
+                                    Text {
+                                        x: 12px;
+                                        width: parent.width - 56px;
+                                        height: parent.height;
+                                        text: f;
+                                        color: Palette.text;
+                                        vertical-alignment: TextVerticalAlignment.center;
+                                        overflow: TextOverflow.elide;
+                                    }
+                                    Glyph {
+                                        x: parent.width - 38px;
+                                        y: 2px;
+                                        icon: "trash";
+                                        size: 32px;
+                                        icon-size: 16px;
+                                        clicked => { root.remove-folder(i); }
+                                    }
+                                }
+                            }
+                            if root.folders.length == 0: Text {
+                                width: parent.width;
+                                height: parent.height;
+                                text: "還沒有加入資料夾";
+                                color: Palette.faint;
+                                horizontal-alignment: TextHorizontalAlignment.center;
+                                vertical-alignment: TextVerticalAlignment.center;
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: start;
+                            Pill { label: "新增資料夾"; icon: "plus"; clicked => { root.add-folder(); } }
+                            Pill { label: "重新掃描"; icon: "refresh"; clicked => { root.rescan(); } }
+                        }
+                    }
+                }
+
+                // discord
+                Rectangle {
+                    border-radius: 12px;
+                    background: Palette.raised;
+                    VerticalLayout {
+                        padding: 14px;
+                        spacing: 8px;
+                        HorizontalLayout {
+                            spacing: 12px;
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 3px;
+                                Text { text: "Discord 狀態"; color: Palette.strong; font-weight: 600; }
+                                Text { text: root.discord-status; color: Palette.muted; font-size: 10px; overflow: TextOverflow.elide; }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                Toggle {
+                                    checked <=> root.discord-enabled;
+                                    toggled(on) => { root.discord-toggled(on); }
+                                }
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Field {
+                                horizontal-stretch: 1;
+                                text <=> root.public-url;
+                                placeholder: "公開 https 網址（封面用，留空＝用伺服器的 publicOrigin）";
+                                accepted(t) => { root.save-public-url(t); }
+                            }
+                            VerticalLayout { alignment: center; Pill { label: "儲存"; clicked => { root.save-public-url(root.public-url); } } }
+                        }
+                        Text {
+                            text: "Discord 只能顯示公開 https 網址上的圖片，區網 http 位址無法顯示封面。";
+                            color: Palette.faint;
+                            font-size: 10px;
+                            wrap: TextWrap.word-wrap;
+                        }
+                    }
+                }
+                Rectangle { vertical-stretch: 1; }
+            }
+        }
+    }
+
+    /* ---------- about ---------- */
+    if root.show-about: Rectangle {
+        background: Palette.scrim;
+        TouchArea { clicked => { root.show-about = false; } }
+        Rectangle {
+            width: 440px;
+            height: 430px;
+            border-radius: 18px;
+            background: Palette.surface;
+            border-width: 1px;
+            border-color: Palette.line;
+            drop-shadow-blur: 40px;
+            drop-shadow-color: #00000070;
+            TouchArea {}
+            VerticalLayout {
+                padding: 26px;
+                spacing: 8px;
+                HorizontalLayout {
+                    alignment: center;
+                    Image { width: 64px; height: 64px; source: @image-url("../assets/icon.png"); }
+                }
+                Text { text: "Simple Player for Windows"; font-size: 17px; font-weight: 700; color: Palette.strong; horizontal-alignment: TextHorizontalAlignment.center; }
+                Text { text: "v0.1.0  ·  Apache License 2.0"; color: Palette.accent; font-size: 11px; font-weight: 600; horizontal-alignment: TextHorizontalAlignment.center; }
+                Text { text: "本地音樂與 Simple Player Web Server，內建 Discord 狀態。"; color: Palette.muted; font-size: 11px; horizontal-alignment: TextHorizontalAlignment.center; wrap: TextWrap.word-wrap; }
+                AboutSlint { height: 150px; }
+                HorizontalLayout {
+                    alignment: center;
+                    Pill { label: "關閉"; clicked => { root.show-about = false; } }
+                }
+            }
+        }
+    }
+}
+
+/* ---------------- detached player ---------------- */
+
+export component PlayerWindow inherits Window {
+    title: "Simple Player · 正在播放";
+    no-frame: true;
+    always-on-top: root.pinned;
+    preferred-width: 360px;
+    preferred-height: 700px;
+    min-width: 340px;
+    min-height: 520px;
+    background: Palette.surface;
+    default-font-size: 12px;
+    default-font-family: "Segoe UI";
+
+    in-out property <bool> pinned: false;
+    in property <string> now-title: "尚未播放";
+    in property <string> now-artist: "選一首歌開始播放";
+    in property <string> now-album;
+    in property <string> now-detail;
+    in property <image> cover-image;
+    in property <bool> has-cover: false;
+    in property <bool> playing: false;
+    in property <float> progress: 0;
+    in property <string> position-text: "0:00";
+    in property <string> duration-text: "0:00";
+    in property <[LyricLine]> lyrics;
+    in property <int> active-lyric: -1;
+    in property <string> lyrics-state: "等待播放";
+    in property <bool> switching: false;
+    callback toggle-play();
+    callback prev();
+    callback next();
+    callback seek(float);
+    callback lyric-clicked(int);
+    callback attach();
+    callback pin-toggled(bool);
+    callback win-drag();
+    callback win-minimize();
+    callback win-resize(int);
+
+    VerticalLayout {
+        // title bar
+        Rectangle {
+            height: 38px;
+            background: Palette.titlebar;
+            TouchArea {
+                moved => {
+                    if (self.pressed) { root.win-drag(); }
+                }
+            }
+            HorizontalLayout {
+                padding-left: 12px;
+                spacing: 4px;
+                VerticalLayout {
+                    alignment: center;
+                    Image { width: 18px; height: 18px; source: @image-url("../assets/icon-small.png"); }
+                }
+                Text {
+                    text: "正在播放";
+                    font-size: 12px;
+                    font-weight: 600;
+                    color: Palette.text;
+                    vertical-alignment: TextVerticalAlignment.center;
+                }
+                Rectangle { horizontal-stretch: 1; }
+                VerticalLayout {
+                    alignment: center;
+                    Glyph {
+                        size: 28px;
+                        icon-size: 16px;
+                        icon: "pin";
+                        active: root.pinned;
+                        clicked => {
+                            root.pinned = !root.pinned;
+                            root.pin-toggled(root.pinned);
+                        }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    Glyph { size: 28px; icon-size: 16px; icon: "attach"; clicked => { root.attach(); } }
+                }
+                Rectangle { width: 4px; }
+                WinButton { width: 42px; icon: "win-min"; clicked => { root.win-minimize(); } }
+                WinButton { width: 42px; icon: "win-close"; danger: true; clicked => { root.attach(); } }
+            }
+        }
+
+        NowPanel {
+            vertical-stretch: 1;
+            pad: 20px;
+            art-size: 300px;
+            cover-image: root.cover-image;
+            has-cover: root.has-cover;
+            now-title: root.now-title;
+            now-artist: root.now-artist;
+            now-album: root.now-album;
+            now-detail: root.now-detail;
+            lyrics: root.lyrics;
+            active-lyric: root.active-lyric;
+            lyrics-state: root.lyrics-state;
+            switching: root.switching;
+            lyric-clicked(i) => { root.lyric-clicked(i); }
+        }
+
+        // transport
+        Rectangle {
+            height: 104px;
+            background: Palette.raised;
+            Rectangle { y: 0; height: 1px; background: Palette.line; }
+            VerticalLayout {
+                padding-left: 18px;
+                padding-right: 18px;
+                padding-top: 12px;
+                padding-bottom: 14px;
+                spacing: 6px;
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text { width: 38px; text: root.position-text; color: Palette.muted; font-size: 10px; horizontal-alignment: TextHorizontalAlignment.right; vertical-alignment: TextVerticalAlignment.center; }
+                    Slider {
+                        horizontal-stretch: 1;
+                        value: root.progress;
+                        committed(v) => { root.seek(v); }
+                    }
+                    Text { width: 38px; text: root.duration-text; color: Palette.muted; font-size: 10px; vertical-alignment: TextVerticalAlignment.center; }
+                }
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 22px;
+                    VerticalLayout { alignment: center; Glyph { icon: "prev"; icon-size: 16px; size: 36px; clicked => { root.prev(); } } }
+                    PlayButton { size: 48px; playing: root.playing; clicked => { root.toggle-play(); } }
+                    VerticalLayout { alignment: center; Glyph { icon: "next"; icon-size: 16px; size: 36px; clicked => { root.next(); } } }
+                }
+            }
+        }
+    }
+
+    ResizeBorders {
+        width: parent.width;
+        height: parent.height;
+        resize(d) => { root.win-resize(d); }
+    }
+}
