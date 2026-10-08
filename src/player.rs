@@ -111,14 +111,6 @@ impl Player {
         Player { tx, shared }
     }
 
-    pub fn load(&self, src: Box<dyn MediaSource>, ext: Option<String>, start_paused: bool) {
-        let _ = self.tx.send(Cmd::Load {
-            src,
-            ext,
-            start_paused,
-        });
-    }
-
     /// Opens the source on the decoder thread (e.g. an HTTP stream), then plays it.
     pub fn open(&self, open: Opener, ext: Option<String>, start_paused: bool) {
         let _ = self.tx.send(Cmd::Open {

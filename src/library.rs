@@ -44,12 +44,6 @@ pub struct Track {
     pub mtime: u64,
 }
 
-impl Track {
-    pub fn display_title(&self) -> &str {
-        &self.title
-    }
-}
-
 /* ---------------- local library ---------------- */
 
 #[derive(Default, Serialize, Deserialize)]

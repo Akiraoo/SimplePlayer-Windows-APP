@@ -101,7 +101,7 @@ export component MainWindow inherits Window {
     callback theme-toggled(bool);
 
     // custom title bar / frameless window
-    in property <bool> maximized: false;
+    in property <bool> is-max: false;
     in-out property <bool> pinned: false;
     in-out property <bool> detached: false;
     callback pin-toggled(bool);
@@ -198,7 +198,7 @@ export component MainWindow inherits Window {
                 }
                 Rectangle { width: 6px; }
                 WinButton { icon: "win-min"; clicked => { root.win-minimize(); } }
-                WinButton { icon: root.maximized ? "win-restore" : "win-max"; clicked => { root.win-maximize(); } }
+                WinButton { icon: root.is-max ? "win-restore" : "win-max"; clicked => { root.win-maximize(); } }
                 WinButton { icon: "win-close"; danger: true; clicked => { root.win-close(); } }
             }
         }
@@ -554,7 +554,7 @@ export component MainWindow inherits Window {
     }
 
     /* ---------- resize borders (frameless window) ---------- */
-    if !root.maximized: ResizeBorders {
+    if !root.is-max: ResizeBorders {
         width: parent.width;
         height: parent.height;
         resize(d) => { root.win-resize(d); }

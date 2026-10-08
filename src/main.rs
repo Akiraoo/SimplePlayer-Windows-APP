@@ -207,16 +207,15 @@ impl App {
     fn rebuild_sources(&mut self) {
         let mut items: Vec<SourceItem> = Vec::new();
         let mut views: Vec<Option<View>> = Vec::new();
-        let mut header =
-            |items: &mut Vec<SourceItem>, views: &mut Vec<Option<View>>, label: &str| {
-                items.push(SourceItem {
-                    label: label.into(),
-                    count: SharedString::new(),
-                    icon: SharedString::new(),
-                    header: true,
-                });
-                views.push(None);
-            };
+        let header = |items: &mut Vec<SourceItem>, views: &mut Vec<Option<View>>, label: &str| {
+            items.push(SourceItem {
+                label: label.into(),
+                count: SharedString::new(),
+                icon: SharedString::new(),
+                header: true,
+            });
+            views.push(None);
+        };
 
         if !self.cfg.local_folders.is_empty() || !self.local.is_empty() {
             header(&mut items, &mut views, "本地音樂");
@@ -1402,7 +1401,7 @@ fn main() -> Result<(), slint::PlatformError> {
             if let Some(ui) = weak.upgrade() {
                 let max = !ui.window().is_maximized();
                 ui.window().set_maximized(max);
-                ui.set_maximized(max);
+                ui.set_is_max(max);
             }
         });
         ui.on_win_close(|| {
@@ -1488,8 +1487,8 @@ fn main() -> Result<(), slint::PlatformError> {
             // Keep the maximize/restore icon right after Win+Up, snapping, etc.
             if let Some(ui) = a.ui() {
                 let max = ui.window().is_maximized();
-                if ui.get_maximized() != max {
-                    ui.set_maximized(max);
+                if ui.get_is_max() != max {
+                    ui.set_is_max(max);
                 }
             }
         });

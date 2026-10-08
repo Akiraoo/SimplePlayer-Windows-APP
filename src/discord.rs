@@ -20,7 +20,6 @@ impl<T: Read + Write + Send> Pipe for T {}
 
 enum Cmd {
     Set(Option<Value>),
-    ClientId(String),
 }
 
 #[derive(Clone, Default)]
@@ -52,16 +51,12 @@ impl Discord {
         let _ = self.tx.send(Cmd::Set(activity));
     }
 
-    pub fn set_client_id(&self, id: String) {
-        let _ = self.tx.send(Cmd::ClientId(id));
-    }
-
     pub fn status(&self) -> Status {
         self.status.lock().map(|s| s.clone()).unwrap_or_default()
     }
 }
 
-fn run(rx: Receiver<Cmd>, status: Arc<Mutex<Status>>, mut client_id: String) {
+fn run(rx: Receiver<Cmd>, status: Arc<Mutex<Status>>, client_id: String) {
     let mut conn: Option<Box<dyn Pipe>> = None;
     let mut want: Option<Value> = None;
     let mut dirty = false;
@@ -88,13 +83,6 @@ fn run(rx: Receiver<Cmd>, status: Arc<Mutex<Status>>, mut client_id: String) {
                     Cmd::Set(a) => {
                         want = a;
                         dirty = true;
-                    }
-                    Cmd::ClientId(id) => {
-                        if id != client_id {
-                            client_id = id;
-                            conn = None;
-                            dirty = true;
-                        }
                     }
                 };
                 apply(cmd);
