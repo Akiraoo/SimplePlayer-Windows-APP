@@ -8,7 +8,7 @@ Simple Player 的 Windows 客戶端：本地音樂和 [Simple Player Web Server]
 
 * **本地音樂**：加入多個資料夾，子資料夾會自動成為歌單（和伺服器一樣的巢狀掃描），標籤逐檔讀取；支援 MP3、FLAC、M4A/AAC、OGG、Opus、WAV 等。掃描結果會快取，第二次開啟不用重掃
 * **Simple Player Web Server**：全部歌曲和伺服器上的播放清單，用 HTTP Range 串流，可以直接跳轉
-* **歌曲列表**：標題、歌手、專輯、格式、時長、來源，點欄位標題排序；點一下就播放（VR 串流桌面時也好點）
+* **歌曲列表**：標題、歌手、專輯、格式、時長、來源，點欄位標題排序
 * **即時搜尋**：多個關鍵字用空白分隔
 * **封面與同步歌詞**：內嵌封面、內嵌歌詞或同名 `.lrc`，點歌詞跳到該句
 * **切歌動畫**：封面和歌詞讀取完成後才開始播放，切換時淡出淡入
@@ -25,8 +25,8 @@ Simple Player 的 Windows 客戶端：本地音樂和 [Simple Player Web Server]
 2. [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) 的「使用 C++ 的桌面開發」（含 Windows SDK，用來把圖示和版本資訊嵌進 exe）
 
 ```
-cargo run              # 開發用
-cargo build --release  # 產生 target\release\SimplePlayer.exe
+Build-Start.bat              # 開發用
+Build-Release.bat  # 產生 target\release\SimplePlayer.exe
 ```
 
 ## 設定
