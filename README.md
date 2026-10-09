@@ -2,7 +2,7 @@
 
 Simple Player 的 Windows 客戶端：本地音樂和 [Simple Player Web Server](https://github.com/Akiraoo/SimplePlayer-Web-Server) 的曲庫放在同一個播放器裡，內建 Discord 狀態顯示。用 Rust + [Slint](https://slint.dev) 寫成，不使用瀏覽器核心，記憶體占用低。
 
-> 開發中（v0.3，pre-release）。
+> 開發中（v0.3.1，pre-release）。
 
 ## 功能
 

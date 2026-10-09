@@ -28,6 +28,8 @@ pub struct Config {
     pub repeat: u8,
     /// The ✕ button hides the window to the tray (playback continues).
     pub close_to_tray: bool,
+    /// Key of the song highlighted last (restored on start).
+    pub last_selected: String,
 }
 
 impl Default for Config {
@@ -48,6 +50,7 @@ impl Default for Config {
             shuffle: false,
             repeat: 0,
             close_to_tray: true,
+            last_selected: String::new(),
         }
     }
 }

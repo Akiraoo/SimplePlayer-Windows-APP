@@ -114,6 +114,11 @@ export component MainWindow inherits Window {
     callback queue-remove(int);
     callback close-to-tray-toggled(bool);
     public function refocus() { keys.focus(); }
+    // bring row i into view (rows are 52 px high)
+    public function scroll-to-row(i: int) {
+        track-list.content-y = min(0px, max(track-list.visible-height - track-list.content-height,
+            track-list.visible-height / 2 - (i + 0.5) * 52px));
+    }
     in property <string> app-version: "0.0.0";
     in-out property <string> accent-hex: "#f2a65a";
 
@@ -319,7 +324,7 @@ export component MainWindow inherits Window {
                     Rectangle { height: 1px; background: Palette.line; }
                     Rectangle {
                         vertical-stretch: 1;
-                        ListView {
+                        track-list := ListView {
                             for row[i] in root.tracks: Rectangle {
                                 height: 52px;
                                 Rectangle {

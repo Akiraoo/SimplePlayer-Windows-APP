@@ -9,6 +9,7 @@ mod media;
 mod player;
 mod server;
 mod session;
+mod single;
 mod tray;
 
 use std::cell::RefCell;
@@ -79,6 +80,9 @@ struct App {
     idle_restore: bool,
     last_session_save: Instant,
     tray: Option<tray::Tray>,
+    /// Restore the last opened list / highlighted song once they exist (libraries load late).
+    pending_view: Option<String>,
+    pending_select: Option<String>,
     cfg: Config,
     client: reqwest::blocking::Client,
     local: Vec<Track>,
@@ -312,6 +316,13 @@ impl App {
             views.push(Some(View::Setup));
         }
 
+        // The list that was open last time, as soon as it exists (server lists load later).
+        if let Some(want) = self.pending_view.clone() {
+            if let Some(v) = views.iter().flatten().find(|v| v.key() == want) {
+                self.view = v.clone();
+                self.pending_view = None;
+            }
+        }
         // Keep the current view if it still exists, otherwise pick the first one.
         if !views.iter().any(|v| v.as_ref() == Some(&self.view)) {
             let wanted = self.cfg.last_view.clone();
@@ -362,6 +373,8 @@ impl App {
             return;
         }
         self.view = view;
+        self.pending_view = None;
+        self.pending_select = None;
         self.cfg.last_view = self.view.key();
         config::save(&self.cfg);
         if let Some(ui) = self.ui() {
@@ -456,6 +469,23 @@ impl App {
             ui.set_sort_asc(self.sort.map(|s| s.1).unwrap_or(true));
         }
         self.push_rows();
+        // highlight (and scroll to) the song that was selected last time
+        if self.pending_view.is_none() {
+            if let Some(key) = self.pending_select.clone() {
+                if let Some(i) = self.visible.iter().position(|t| t.key == key) {
+                    self.pending_select = None;
+                    if let Some(ui) = self.ui() {
+                        ui.set_selected_row(i as i32);
+                        let weak = ui.as_weak();
+                        slint::Timer::single_shot(Duration::from_millis(150), move || {
+                            if let Some(ui) = weak.upgrade() {
+                                ui.invoke_scroll_to_row(i as i32);
+                            }
+                        });
+                    }
+                }
+            }
+        }
     }
 
     fn push_rows(&self) {
@@ -534,6 +564,9 @@ impl App {
         if index >= self.visible.len() {
             return;
         }
+        self.pending_select = None;
+        self.cfg.last_view = self.view.key();
+        self.cfg.last_selected = self.visible[index].key.clone();
         self.idle_restore = false;
         if self.view == View::Queue {
             // play that queued song; the queue itself keeps its order
@@ -1749,6 +1782,10 @@ fn install_crash_log() {
 
 fn main() -> Result<(), slint::PlatformError> {
     install_crash_log();
+    // Already running (maybe hidden in the tray)? Wake that copy and quit.
+    let Some(instance) = single::acquire() else {
+        return Ok(());
+    };
     let ui = MainWindow::new()?;
     let pw = PlayerWindow::new()?;
     let cfg = config::load();
@@ -1790,6 +1827,8 @@ fn main() -> Result<(), slint::PlatformError> {
         idle_restore: false,
         last_session_save: Instant::now(),
         tray: None,
+        pending_view: None,
+        pending_select: None,
         local: library::load_local_cache(),
         server: None,
         client: server::client(),
@@ -1818,6 +1857,12 @@ fn main() -> Result<(), slint::PlatformError> {
     APP.with(|a| *a.borrow_mut() = Some(app));
 
     with_app(|app| {
+        if !app.cfg.last_view.is_empty() {
+            app.pending_view = Some(app.cfg.last_view.clone());
+        }
+        if !app.cfg.last_selected.is_empty() {
+            app.pending_select = Some(app.cfg.last_selected.clone());
+        }
         app.push_folders();
         app.push_modes();
         app.rebuild_sources();
@@ -2166,8 +2211,14 @@ fn main() -> Result<(), slint::PlatformError> {
     tray_timer.start(
         slint::TimerMode::Repeated,
         Duration::from_millis(120),
-        || {
-            with_app(|a| a.poll_tray());
+        move || {
+            let show = instance.show_requested();
+            with_app(|a| {
+                if show {
+                    a.show_from_tray();
+                }
+                a.poll_tray();
+            });
         },
     );
 
