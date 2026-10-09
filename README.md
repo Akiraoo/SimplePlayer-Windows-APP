@@ -2,12 +2,12 @@
 
 Simple Player 的 Windows 客戶端：本地音樂和 [Simple Player Web Server](https://github.com/Akiraoo/SimplePlayer-Web-Server) 的曲庫放在同一個播放器裡，內建 Discord 狀態顯示。用 Rust + [Slint](https://slint.dev) 寫成，不使用瀏覽器核心，記憶體占用低。
 
-> 開發中（v0.4.0，pre-release）。
+> 開發中（v0.4.1，pre-release）。
 
 ## 功能
 
 * **本地音樂**：加入多個資料夾，子資料夾會自動成為歌單（和伺服器一樣的巢狀掃描），標籤逐檔讀取；支援 MP3、FLAC、M4A/AAC、OGG、Opus、WAV 等。掃描結果會快取，第二次開啟不用重掃
-* **Simple Player Web Server**：全部歌曲和伺服器上的播放清單，用 HTTP Range 串流，可以直接跳轉
+* **Simple Player Web Server**：全部歌曲和伺服器上的播放清單，用 HTTP Range 串流，可以直接跳轉；按重新整理會請伺服器重新掃描曲庫，新加入的歌馬上出現
 * **歌曲列表**：標題、歌手、專輯、格式、時長、來源，點欄位標題排序
 * **即時搜尋**：多個關鍵字用空白分隔
 * **封面與同步歌詞**：內嵌封面、內嵌歌詞或同名 `.lrc`，點歌詞跳到該句

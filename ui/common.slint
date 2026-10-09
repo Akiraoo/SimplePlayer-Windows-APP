@@ -590,3 +590,50 @@ export component NowPanel inherits Rectangle {
         }
     ]
 }
+
+// Thin scrollbar with one fixed look (no hover growth). Put it over a ListView whose own
+// bar is off (vertical-scrollbar-policy: always-off) or over a Flickable, and bind
+// `content-y <=> list.content-y`. The thumb can be dragged; the wheel works over it too.
+export component ScrollThumb inherits Rectangle {
+    in property <length> content-h;
+    in property <length> view-h;
+    in-out property <length> content-y;
+    width: 10px;
+    property <length> range: max(0px, root.content-h - root.view-h);
+    property <length> thumb-h: max(32px, root.height * root.view-h / max(1px, root.content-h));
+    property <length> travel: max(1px, root.height - root.thumb-h);
+    property <length> thumb-y: root.range > 0 ? root.travel * clamp(-root.content-y / root.range, 0, 1) : 0;
+    property <length> grab-content;
+    visible: root.range > 1px;
+    function set(y: length) {
+        root.content-y = -clamp(y, 0px, root.range);
+    }
+    Rectangle {
+        x: parent.width - 6px;
+        y: root.thumb-y + 2px;
+        width: 4px;
+        height: root.thumb-h - 4px;
+        border-radius: 2px;
+        background: ta.pressed ? Palette.muted : Palette.track;
+    }
+    ta := TouchArea {
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                if (self.mouse-y < root.thumb-y || self.mouse-y > root.thumb-y + root.thumb-h) {
+                    // clicked beside the thumb: jump there (thumb centred on the pointer)
+                    root.set((self.mouse-y - root.thumb-h / 2) / root.travel * root.range);
+                }
+                root.grab-content = -root.content-y;
+            }
+        }
+        moved => {
+            if (self.pressed) {
+                root.set(root.grab-content + (self.mouse-y - self.pressed-y) / root.travel * root.range);
+            }
+        }
+        scroll-event(e) => {
+            root.set(-root.content-y - e.delta-y);
+            accept
+        }
+    }
+}

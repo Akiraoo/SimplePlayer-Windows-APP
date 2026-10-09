@@ -6,8 +6,7 @@ import { ListView, AboutSlint } from "std-widgets.slint";
 import { Icon } from "icons.slint";
 import {
     Palette, LyricLine, Glyph, Pill, Toggle, Slider, SearchBox, Field, Art, PlayingMark, HeaderCell,
-    SectionLabel, WinButton, ResizeBorders, PlayButton, NowPanel
-} from "common.slint";
+    SectionLabel, WinButton, ResizeBorders, PlayButton, NowPanel, ScrollThumb } from "common.slint";
 
 export { Palette, LyricLine } from "common.slint";
 
@@ -248,54 +247,64 @@ export component MainWindow inherits Window {
                 background: Palette.rail;
                 VerticalLayout {
                     padding-top: 6px;
-                    ListView {
+                    Rectangle {
                         vertical-stretch: 1;
-                        for s[i] in root.sources: Rectangle {
-                            height: s.header ? 34px : 38px;
-                            if !s.header: Rectangle {
-                                x: 10px;
-                                width: parent.width - 20px;
-                                y: 2px;
-                                height: parent.height - 4px;
-                                border-radius: 10px;
-                                background: i == root.selected-source ? Palette.accent-soft : (sta.has-hover ? Palette.hover : transparent);
-                            }
-                            HorizontalLayout {
-                                padding-left: s.header ? 20px : 20px;
-                                padding-right: 20px;
-                                padding-top: s.header ? 14px : 0px;
-                                spacing: 10px;
-                                if !s.header: VerticalLayout {
-                                    alignment: center;
-                                    Icon {
-                                        name: s.icon;
-                                        size: 18px;
-                                        color: i == root.selected-source ? Palette.accent : Palette.muted;
-                                        line: 1.7px;
+                        rail-list := ListView {
+                            vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+                            for s[i] in root.sources: Rectangle {
+                                height: s.header ? 34px : 38px;
+                                if !s.header: Rectangle {
+                                    x: 10px;
+                                    width: parent.width - 20px;
+                                    y: 2px;
+                                    height: parent.height - 4px;
+                                    border-radius: 10px;
+                                    background: i == root.selected-source ? Palette.accent-soft : (sta.has-hover ? Palette.hover : transparent);
+                                }
+                                HorizontalLayout {
+                                    padding-left: s.header ? 20px : 20px;
+                                    padding-right: 20px;
+                                    padding-top: s.header ? 14px : 0px;
+                                    spacing: 10px;
+                                    if !s.header: VerticalLayout {
+                                        alignment: center;
+                                        Icon {
+                                            name: s.icon;
+                                            size: 18px;
+                                            color: i == root.selected-source ? Palette.accent : Palette.muted;
+                                            line: 1.7px;
+                                        }
+                                    }
+                                    Text {
+                                        horizontal-stretch: 1;
+                                        text: s.label;
+                                        color: s.header ? Palette.faint : (i == root.selected-source ? Palette.strong : Palette.text);
+                                        font-size: s.header ? 10px : 12px;
+                                        font-weight: s.header ? 700 : (i == root.selected-source ? 600 : 400);
+                                        letter-spacing: s.header ? 1.2px : 0px;
+                                        vertical-alignment: TextVerticalAlignment.center;
+                                        overflow: TextOverflow.elide;
+                                    }
+                                    if !s.header: Text {
+                                        text: s.count;
+                                        color: i == root.selected-source ? Palette.accent : Palette.faint;
+                                        font-size: 10px;
+                                        vertical-alignment: TextVerticalAlignment.center;
                                     }
                                 }
-                                Text {
-                                    horizontal-stretch: 1;
-                                    text: s.label;
-                                    color: s.header ? Palette.faint : (i == root.selected-source ? Palette.strong : Palette.text);
-                                    font-size: s.header ? 10px : 12px;
-                                    font-weight: s.header ? 700 : (i == root.selected-source ? 600 : 400);
-                                    letter-spacing: s.header ? 1.2px : 0px;
-                                    vertical-alignment: TextVerticalAlignment.center;
-                                    overflow: TextOverflow.elide;
-                                }
-                                if !s.header: Text {
-                                    text: s.count;
-                                    color: i == root.selected-source ? Palette.accent : Palette.faint;
-                                    font-size: 10px;
-                                    vertical-alignment: TextVerticalAlignment.center;
+                                sta := TouchArea {
+                                    enabled: !s.header;
+                                    mouse-cursor: pointer;
+                                    clicked => { root.source-clicked(i); }
                                 }
                             }
-                            sta := TouchArea {
-                                enabled: !s.header;
-                                mouse-cursor: pointer;
-                                clicked => { root.source-clicked(i); }
-                            }
+                        }
+                        ScrollThumb {
+                            x: parent.width - self.width;
+                            height: parent.height;
+                            content-h: rail-list.content-height;
+                            view-h: rail-list.visible-height;
+                            content-y <=> rail-list.content-y;
                         }
                     }
                 }
@@ -338,6 +347,7 @@ export component MainWindow inherits Window {
                     Rectangle {
                         vertical-stretch: 1;
                         track-list := ListView {
+                            vertical-scrollbar-policy: ScrollBarPolicy.always-off;
                             for row[i] in root.tracks: Rectangle {
                                 height: 52px;
                                 Rectangle {
@@ -455,6 +465,13 @@ export component MainWindow inherits Window {
                                     }
                                 }
                             }
+                        }
+                        ScrollThumb {
+                            x: parent.width - self.width;
+                            height: parent.height;
+                            content-h: track-list.content-height;
+                            view-h: track-list.visible-height;
+                            content-y <=> track-list.content-y;
                         }
 
                         // empty state
@@ -685,369 +702,398 @@ export component MainWindow inherits Window {
                     Rectangle { horizontal-stretch: 1; }
                     VerticalLayout { alignment: center; Glyph { icon: "close"; clicked => { root.show-settings = false; keys.focus(); } } }
                 }
-                settings-scroll := Flickable {
+                Rectangle {
                     vertical-stretch: 1;
-                    content-height: settings-col.preferred-height;
-                    settings-col := VerticalLayout {
-                        width: settings-scroll.width;
-                        spacing: 10px;
+                    settings-scroll := Flickable {
+                        content-height: settings-col.preferred-height;
+                        settings-col := VerticalLayout {
+                            // leave a gutter for the scrollbar
+                            width: settings-scroll.width - 12px;
+                            spacing: 10px;
 
-                        // theme colour
-                        Rectangle {
-                            border-radius: 12px;
-                            background: Palette.raised;
-                            VerticalLayout {
-                                padding: 14px;
-                                spacing: 10px;
-                                SectionLabel { text: "主題色（只換強調色，深淺色不受影響）"; }
-                                HorizontalLayout {
-                                    spacing: 8px;
-                                    for sw in [
-                                        { c: #f2a65a, hex: "#f2a65a" },
-                                        { c: #ff7a6b, hex: "#ff7a6b" },
-                                        { c: #f472b6, hex: "#f472b6" },
-                                        { c: #a78bfa, hex: "#a78bfa" },
-                                        { c: #60a5fa, hex: "#60a5fa" },
-                                        { c: #2dd4bf, hex: "#2dd4bf" },
-                                        { c: #4ade80, hex: "#4ade80" },
-                                        { c: #facc15, hex: "#facc15" },
-                                    ]: VerticalLayout {
-                                        alignment: center;
-                                        Rectangle {
-                                            width: 26px;
-                                            height: 26px;
-                                            border-radius: 13px;
-                                            background: sw.c;
-                                            border-width: Palette.accent-base == sw.c ? 3px : (swta.has-hover ? 2px : 0px);
-                                            border-color: Palette.light ? #ffffff : #17181a;
+                            // theme colour
+                            Rectangle {
+                                border-radius: 12px;
+                                background: Palette.raised;
+                                VerticalLayout {
+                                    padding: 14px;
+                                    spacing: 10px;
+                                    SectionLabel { text: "主題色（只換強調色，深淺色不受影響）"; }
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        for sw in [
+                                            { c: #f2a65a, hex: "#f2a65a" },
+                                            { c: #ff7a6b, hex: "#ff7a6b" },
+                                            { c: #f472b6, hex: "#f472b6" },
+                                            { c: #a78bfa, hex: "#a78bfa" },
+                                            { c: #60a5fa, hex: "#60a5fa" },
+                                            { c: #2dd4bf, hex: "#2dd4bf" },
+                                            { c: #4ade80, hex: "#4ade80" },
+                                            { c: #facc15, hex: "#facc15" },
+                                        ]: VerticalLayout {
+                                            alignment: center;
                                             Rectangle {
-                                                visible: Palette.accent-base == sw.c;
-                                                width: parent.width + 4px;
-                                                height: parent.height + 4px;
-                                                border-radius: self.width / 2;
-                                                border-width: 2px;
-                                                border-color: sw.c;
-                                            }
-                                            swta := TouchArea {
-                                                mouse-cursor: pointer;
-                                                clicked => {
-                                                    root.accent-hex = sw.hex;
-                                                    root.accent-picked(sw.hex);
+                                                width: 26px;
+                                                height: 26px;
+                                                border-radius: 13px;
+                                                background: sw.c;
+                                                border-width: Palette.accent-base == sw.c ? 3px : (swta.has-hover ? 2px : 0px);
+                                                border-color: Palette.light ? #ffffff : #17181a;
+                                                Rectangle {
+                                                    visible: Palette.accent-base == sw.c;
+                                                    width: parent.width + 4px;
+                                                    height: parent.height + 4px;
+                                                    border-radius: self.width / 2;
+                                                    border-width: 2px;
+                                                    border-color: sw.c;
+                                                }
+                                                swta := TouchArea {
+                                                    mouse-cursor: pointer;
+                                                    clicked => {
+                                                        root.accent-hex = sw.hex;
+                                                        root.accent-picked(sw.hex);
+                                                    }
                                                 }
                                             }
                                         }
+                                        Rectangle { horizontal-stretch: 1; }
+                                        Field {
+                                            width: 110px;
+                                            text <=> root.accent-hex;
+                                            placeholder: "#rrggbb";
+                                            accepted(t) => { root.accent-picked(t); }
+                                        }
+                                        VerticalLayout { alignment: center; Pill { label: "套用"; clicked => { root.accent-picked(root.accent-hex); } } }
                                     }
-                                    Rectangle { horizontal-stretch: 1; }
-                                    Field {
-                                        width: 110px;
-                                        text <=> root.accent-hex;
-                                        placeholder: "#rrggbb";
-                                        accepted(t) => { root.accent-picked(t); }
-                                    }
-                                    VerticalLayout { alignment: center; Pill { label: "套用"; clicked => { root.accent-picked(root.accent-hex); } } }
-                                }
-                                Rectangle { height: 1px; background: Palette.line; }
-                                HorizontalLayout {
-                                    spacing: 12px;
-                                    VerticalLayout {
-                                        horizontal-stretch: 1;
-                                        spacing: 2px;
-                                        Text { text: "關閉視窗時縮到系統列"; color: Palette.strong; font-weight: 600; }
-                                        Text { text: "按關閉鈕後繼續在背景播放；從系統列圖示的選單「結束」才會完全關閉。"; color: Palette.muted; font-size: 10px; overflow: TextOverflow.elide; }
-                                    }
-                                    VerticalLayout {
-                                        alignment: center;
-                                        Toggle {
-                                            checked <=> root.close-to-tray;
-                                            toggled(on) => { root.close-to-tray-toggled(on); }
+                                    Rectangle { height: 1px; background: Palette.line; }
+                                    HorizontalLayout {
+                                        spacing: 12px;
+                                        VerticalLayout {
+                                            horizontal-stretch: 1;
+                                            spacing: 2px;
+                                            Text { text: "關閉視窗時縮到系統列"; color: Palette.strong; font-weight: 600; }
+                                            Text { text: "按關閉鈕後繼續在背景播放；從系統列圖示的選單「結束」才會完全關閉。"; color: Palette.muted; font-size: 10px; overflow: TextOverflow.elide; }
+                                        }
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Toggle {
+                                                checked <=> root.close-to-tray;
+                                                toggled(on) => { root.close-to-tray-toggled(on); }
+                                            }
                                         }
                                     }
                                 }
                             }
-                        }
 
-                        // audio output
-                        Rectangle {
-                            border-radius: 12px;
-                            background: Palette.raised;
-                            VerticalLayout {
-                                padding: 14px;
-                                spacing: 10px;
-                                HorizontalLayout {
-                                    spacing: 8px;
-                                    VerticalLayout { alignment: center; Icon { name: "volume"; size: 16px; color: Palette.accent; } }
-                                    SectionLabel { text: "音訊輸出裝置"; vertical-alignment: TextVerticalAlignment.center; }
-                                }
-                                // drop-down: shows the chosen device, the list opens in a popup
-                                out-btn := Rectangle {
-                                    height: 36px;
-                                    border-radius: 9px;
-                                    background: obta.has-hover ? Palette.hover : Palette.bg;
-                                    border-width: 1px;
-                                    border-color: Palette.line;
-                                    Text {
-                                        x: 12px;
-                                        width: parent.width - 44px;
-                                        height: parent.height;
-                                        text: root.output-devices[root.output-index];
-                                        color: Palette.text;
-                                        vertical-alignment: TextVerticalAlignment.center;
-                                        overflow: TextOverflow.elide;
+                            // audio output
+                            Rectangle {
+                                border-radius: 12px;
+                                background: Palette.raised;
+                                VerticalLayout {
+                                    padding: 14px;
+                                    spacing: 10px;
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        VerticalLayout { alignment: center; Icon { name: "volume"; size: 16px; color: Palette.accent; } }
+                                        SectionLabel { text: "音訊輸出裝置"; vertical-alignment: TextVerticalAlignment.center; }
                                     }
-                                    Icon {
-                                        x: parent.width - 28px;
-                                        y: (parent.height - self.height) / 2;
-                                        name: "chevron-down";
-                                        size: 16px;
-                                        color: Palette.muted;
-                                    }
-                                    obta := TouchArea {
-                                        mouse-cursor: pointer;
-                                        clicked => { out-popup.show(); }
-                                    }
-                                    out-popup := PopupWindow {
-                                        x: 0;
-                                        y: parent.height + 4px;
-                                        width: parent.width;
-                                        height: min(260px, root.output-devices.length * 34px + 10px);
-                                        Rectangle {
-                                            border-radius: 10px;
-                                            background: Palette.raised;
-                                            border-width: 1px;
-                                            border-color: Palette.line;
-                                            clip: true;
-                                            Flickable {
-                                                x: 5px;
-                                                y: 5px;
-                                                width: parent.width - 10px;
-                                                height: parent.height - 10px;
-                                                content-height: root.output-devices.length * 34px;
-                                                for d[i] in root.output-devices: Rectangle {
-                                                    y: i * 34px;
-                                                    height: 34px;
-                                                    border-radius: 7px;
-                                                    background: i == root.output-index ? Palette.accent-soft : (dta.has-hover ? Palette.hover : transparent);
-                                                    Text {
-                                                        x: 10px;
-                                                        width: parent.width - 20px;
-                                                        height: parent.height;
-                                                        text: d;
-                                                        color: i == root.output-index ? Palette.accent : Palette.text;
-                                                        font-weight: i == root.output-index ? 600 : 400;
-                                                        vertical-alignment: TextVerticalAlignment.center;
-                                                        overflow: TextOverflow.elide;
+                                    // drop-down: shows the chosen device, the list opens in a popup
+                                    out-btn := Rectangle {
+                                        height: 36px;
+                                        border-radius: 9px;
+                                        background: obta.has-hover ? Palette.hover : Palette.bg;
+                                        border-width: 1px;
+                                        border-color: Palette.line;
+                                        Text {
+                                            x: 12px;
+                                            width: parent.width - 44px;
+                                            height: parent.height;
+                                            text: root.output-devices[root.output-index];
+                                            color: Palette.text;
+                                            vertical-alignment: TextVerticalAlignment.center;
+                                            overflow: TextOverflow.elide;
+                                        }
+                                        Icon {
+                                            x: parent.width - 28px;
+                                            y: (parent.height - self.height) / 2;
+                                            name: "chevron-down";
+                                            size: 16px;
+                                            color: Palette.muted;
+                                        }
+                                        obta := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { out-popup.show(); }
+                                        }
+                                        out-popup := PopupWindow {
+                                            x: 0;
+                                            y: parent.height + 4px;
+                                            width: parent.width;
+                                            height: min(260px, root.output-devices.length * 34px + 10px);
+                                            Rectangle {
+                                                border-radius: 10px;
+                                                background: Palette.raised;
+                                                border-width: 1px;
+                                                border-color: Palette.line;
+                                                clip: true;
+                                                dev-flick := Flickable {
+                                                    x: 5px;
+                                                    y: 5px;
+                                                    width: parent.width - 10px;
+                                                    height: parent.height - 10px;
+                                                    content-height: root.output-devices.length * 34px;
+                                                    for d[i] in root.output-devices: Rectangle {
+                                                        y: i * 34px;
+                                                        height: 34px;
+                                                        border-radius: 7px;
+                                                        background: i == root.output-index ? Palette.accent-soft : (dta.has-hover ? Palette.hover : transparent);
+                                                        Text {
+                                                            x: 10px;
+                                                            width: parent.width - 20px;
+                                                            height: parent.height;
+                                                            text: d;
+                                                            color: i == root.output-index ? Palette.accent : Palette.text;
+                                                            font-weight: i == root.output-index ? 600 : 400;
+                                                            vertical-alignment: TextVerticalAlignment.center;
+                                                            overflow: TextOverflow.elide;
+                                                        }
+                                                        dta := TouchArea {
+                                                            mouse-cursor: pointer;
+                                                            clicked => {
+                                                                root.output-picked(i);
+                                                                out-popup.close();
+                                                            }
+                                                        }
                                                     }
-                                                    dta := TouchArea {
-                                                        mouse-cursor: pointer;
-                                                        clicked => {
-                                                            root.output-picked(i);
-                                                            out-popup.close();
+                                                }
+                                                ScrollThumb {
+                                                    x: parent.width - self.width - 2px;
+                                                    y: 5px;
+                                                    height: parent.height - 10px;
+                                                    content-h: dev-flick.content-height;
+                                                    view-h: dev-flick.height;
+                                                    content-y <=> dev-flick.content-y;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    HorizontalLayout {
+                                        spacing: 12px;
+                                        VerticalLayout {
+                                            horizontal-stretch: 1;
+                                            spacing: 2px;
+                                            Text { text: "WASAPI 獨佔模式"; color: Palette.strong; font-weight: 600; }
+                                            Text {
+                                                text: "開啟後依歌曲本身的取樣率與位元深度直接輸出（音量 100% 時為 bit-perfect），不經 Windows 混音；播放期間其他程式在這個裝置上會沒有聲音。";
+                                                color: Palette.muted;
+                                                font-size: 10px;
+                                                wrap: TextWrap.word-wrap;
+                                            }
+                                        }
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Toggle {
+                                                checked <=> root.exclusive;
+                                                toggled(on) => { root.exclusive-toggled(on); }
+                                            }
+                                        }
+                                    }
+                                    HorizontalLayout {
+                                        spacing: 12px;
+                                        VerticalLayout {
+                                            horizontal-stretch: 1;
+                                            spacing: 2px;
+                                            Text { text: "緩衝大小"; color: Palette.strong; font-weight: 600; }
+                                            Text {
+                                                text: "播放會斷斷續續時調大；越大越穩，但暫停、跳轉的反應會慢一點。";
+                                                color: Palette.muted;
+                                                font-size: 10px;
+                                                wrap: TextWrap.word-wrap;
+                                            }
+                                        }
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Rectangle {
+                                                width: 186px;
+                                                height: 30px;
+                                                border-radius: 15px;
+                                                background: Palette.bg;
+                                                border-width: 1px;
+                                                border-color: Palette.line;
+                                                HorizontalLayout {
+                                                    padding: 3px;
+                                                    spacing: 2px;
+                                                    for opt[i] in ["標準", "大", "超大"]: Rectangle {
+                                                        border-radius: 12px;
+                                                        background: i == root.buffer-level ? Palette.accent : (bta.has-hover ? Palette.hover : transparent);
+                                                        Text {
+                                                            text: opt;
+                                                            color: i == root.buffer-level ? Palette.accent-text : Palette.text;
+                                                            font-size: 11px;
+                                                            font-weight: i == root.buffer-level ? 600 : 400;
+                                                            horizontal-alignment: TextHorizontalAlignment.center;
+                                                            vertical-alignment: TextVerticalAlignment.center;
+                                                        }
+                                                        bta := TouchArea {
+                                                            mouse-cursor: pointer;
+                                                            clicked => { root.buffer-picked(i); }
                                                         }
                                                     }
                                                 }
                                             }
                                         }
                                     }
-                                }
-                                HorizontalLayout {
-                                    spacing: 12px;
-                                    VerticalLayout {
-                                        horizontal-stretch: 1;
-                                        spacing: 2px;
-                                        Text { text: "WASAPI 獨佔模式"; color: Palette.strong; font-weight: 600; }
-                                        Text {
-                                            text: "開啟後依歌曲本身的取樣率與位元深度直接輸出（音量 100% 時為 bit-perfect），不經 Windows 混音；播放期間其他程式在這個裝置上會沒有聲音。";
-                                            color: Palette.muted;
-                                            font-size: 10px;
-                                            wrap: TextWrap.word-wrap;
-                                        }
-                                    }
-                                    VerticalLayout {
-                                        alignment: center;
-                                        Toggle {
-                                            checked <=> root.exclusive;
-                                            toggled(on) => { root.exclusive-toggled(on); }
-                                        }
+                                    Text {
+                                        text: root.output-status == "" ? "" : "目前輸出：" + root.output-status;
+                                        color: Palette.faint;
+                                        font-size: 10px;
+                                        // long status (e.g. why the device refused a format) must wrap,
+                                        // not widen the whole settings card
+                                        wrap: TextWrap.word-wrap;
                                     }
                                 }
-                                HorizontalLayout {
-                                    spacing: 12px;
-                                    VerticalLayout {
-                                        horizontal-stretch: 1;
-                                        spacing: 2px;
-                                        Text { text: "緩衝大小"; color: Palette.strong; font-weight: 600; }
-                                        Text {
-                                            text: "播放會斷斷續續時調大；越大越穩，但暫停、跳轉的反應會慢一點。";
-                                            color: Palette.muted;
-                                            font-size: 10px;
-                                            wrap: TextWrap.word-wrap;
-                                        }
+                            }
+
+                            // server
+                            Rectangle {
+                                border-radius: 12px;
+                                background: Palette.raised;
+                                VerticalLayout {
+                                    padding: 14px;
+                                    spacing: 8px;
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        VerticalLayout { alignment: center; Icon { name: "cloud"; size: 16px; color: Palette.accent; } }
+                                        SectionLabel { text: "SIMPLE PLAYER 伺服器"; vertical-alignment: TextVerticalAlignment.center; }
                                     }
-                                    VerticalLayout {
-                                        alignment: center;
-                                        Rectangle {
-                                            width: 186px;
-                                            height: 30px;
-                                            border-radius: 15px;
-                                            background: Palette.bg;
-                                            border-width: 1px;
-                                            border-color: Palette.line;
-                                            HorizontalLayout {
-                                                padding: 3px;
-                                                spacing: 2px;
-                                                for opt[i] in ["標準", "大", "超大"]: Rectangle {
-                                                    border-radius: 12px;
-                                                    background: i == root.buffer-level ? Palette.accent : (bta.has-hover ? Palette.hover : transparent);
-                                                    Text {
-                                                        text: opt;
-                                                        color: i == root.buffer-level ? Palette.accent-text : Palette.text;
-                                                        font-size: 11px;
-                                                        font-weight: i == root.buffer-level ? 600 : 400;
-                                                        horizontal-alignment: TextHorizontalAlignment.center;
-                                                        vertical-alignment: TextVerticalAlignment.center;
-                                                    }
-                                                    bta := TouchArea {
-                                                        mouse-cursor: pointer;
-                                                        clicked => { root.buffer-picked(i); }
-                                                    }
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        Field {
+                                            horizontal-stretch: 1;
+                                            text <=> root.server-url;
+                                            placeholder: "例如 http://192.168.0.10:55555";
+                                            accepted(t) => { root.save-server(t); }
+                                        }
+                                        VerticalLayout { alignment: center; Pill { label: "連線"; primary: true; clicked => { root.save-server(root.server-url); } } }
+                                    }
+                                    Text { text: root.server-status; color: Palette.muted; font-size: 11px; }
+                                }
+                            }
+
+                            // folders
+                            Rectangle {
+                                border-radius: 12px;
+                                background: Palette.raised;
+                                VerticalLayout {
+                                    padding: 14px;
+                                    spacing: 8px;
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        VerticalLayout { alignment: center; Icon { name: "folder"; size: 16px; color: Palette.accent; } }
+                                        SectionLabel { text: "本地音樂資料夾（子資料夾會成為歌單）"; vertical-alignment: TextVerticalAlignment.center; }
+                                    }
+                                    Rectangle {
+                                        height: 100px;
+                                        border-radius: 9px;
+                                        background: Palette.bg;
+                                        folder-list := ListView {
+                                            vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+                                            for f[i] in root.folders: Rectangle {
+                                                height: 36px;
+                                                background: fta.has-hover ? Palette.hover : transparent;
+                                                fta := TouchArea {}
+                                                Text {
+                                                    x: 12px;
+                                                    width: parent.width - 56px;
+                                                    height: parent.height;
+                                                    text: f;
+                                                    color: Palette.text;
+                                                    vertical-alignment: TextVerticalAlignment.center;
+                                                    overflow: TextOverflow.elide;
+                                                }
+                                                Glyph {
+                                                    x: parent.width - 38px;
+                                                    y: 2px;
+                                                    icon: "trash";
+                                                    size: 32px;
+                                                    icon-size: 16px;
+                                                    clicked => { root.remove-folder(i); }
                                                 }
                                             }
                                         }
+                                        ScrollThumb {
+                                            x: parent.width - self.width;
+                                            height: parent.height;
+                                            content-h: folder-list.content-height;
+                                            view-h: folder-list.visible-height;
+                                            content-y <=> folder-list.content-y;
+                                        }
+                                        if root.folders.length == 0: Text {
+                                            width: parent.width;
+                                            height: parent.height;
+                                            text: "還沒有加入資料夾";
+                                            color: Palette.faint;
+                                            horizontal-alignment: TextHorizontalAlignment.center;
+                                            vertical-alignment: TextVerticalAlignment.center;
+                                        }
+                                    }
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        alignment: start;
+                                        Pill { label: "新增資料夾"; icon: "plus"; clicked => { root.add-folder(); } }
+                                        Pill { label: "重新掃描"; icon: "refresh"; clicked => { root.rescan(); } }
                                     }
                                 }
-                                Text {
-                                    text: root.output-status == "" ? "" : "目前輸出：" + root.output-status;
-                                    color: Palette.faint;
-                                    font-size: 10px;
-                                }
                             }
-                        }
 
-                        // server
-                        Rectangle {
-                            border-radius: 12px;
-                            background: Palette.raised;
-                            VerticalLayout {
-                                padding: 14px;
-                                spacing: 8px;
-                                HorizontalLayout {
+                            // discord
+                            Rectangle {
+                                border-radius: 12px;
+                                background: Palette.raised;
+                                VerticalLayout {
+                                    padding: 14px;
                                     spacing: 8px;
-                                    VerticalLayout { alignment: center; Icon { name: "cloud"; size: 16px; color: Palette.accent; } }
-                                    SectionLabel { text: "SIMPLE PLAYER 伺服器"; vertical-alignment: TextVerticalAlignment.center; }
-                                }
-                                HorizontalLayout {
-                                    spacing: 8px;
-                                    Field {
-                                        horizontal-stretch: 1;
-                                        text <=> root.server-url;
-                                        placeholder: "例如 http://192.168.0.10:55555";
-                                        accepted(t) => { root.save-server(t); }
-                                    }
-                                    VerticalLayout { alignment: center; Pill { label: "連線"; primary: true; clicked => { root.save-server(root.server-url); } } }
-                                }
-                                Text { text: root.server-status; color: Palette.muted; font-size: 11px; }
-                            }
-                        }
-
-                        // folders
-                        Rectangle {
-                            border-radius: 12px;
-                            background: Palette.raised;
-                            VerticalLayout {
-                                padding: 14px;
-                                spacing: 8px;
-                                HorizontalLayout {
-                                    spacing: 8px;
-                                    VerticalLayout { alignment: center; Icon { name: "folder"; size: 16px; color: Palette.accent; } }
-                                    SectionLabel { text: "本地音樂資料夾（子資料夾會成為歌單）"; vertical-alignment: TextVerticalAlignment.center; }
-                                }
-                                Rectangle {
-                                    height: 100px;
-                                    border-radius: 9px;
-                                    background: Palette.bg;
-                                    ListView {
-                                        for f[i] in root.folders: Rectangle {
-                                            height: 36px;
-                                            background: fta.has-hover ? Palette.hover : transparent;
-                                            fta := TouchArea {}
-                                            Text {
-                                                x: 12px;
-                                                width: parent.width - 56px;
-                                                height: parent.height;
-                                                text: f;
-                                                color: Palette.text;
-                                                vertical-alignment: TextVerticalAlignment.center;
-                                                overflow: TextOverflow.elide;
-                                            }
-                                            Glyph {
-                                                x: parent.width - 38px;
-                                                y: 2px;
-                                                icon: "trash";
-                                                size: 32px;
-                                                icon-size: 16px;
-                                                clicked => { root.remove-folder(i); }
+                                    HorizontalLayout {
+                                        spacing: 12px;
+                                        VerticalLayout {
+                                            horizontal-stretch: 1;
+                                            spacing: 3px;
+                                            Text { text: "Discord 狀態"; color: Palette.strong; font-weight: 600; }
+                                            Text { text: root.discord-status; color: Palette.muted; font-size: 10px; overflow: TextOverflow.elide; }
+                                        }
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Toggle {
+                                                checked <=> root.discord-enabled;
+                                                toggled(on) => { root.discord-toggled(on); }
                                             }
                                         }
                                     }
-                                    if root.folders.length == 0: Text {
-                                        width: parent.width;
-                                        height: parent.height;
-                                        text: "還沒有加入資料夾";
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        Field {
+                                            horizontal-stretch: 1;
+                                            text <=> root.public-url;
+                                            placeholder: "公開 https 網址（封面用，留空＝用伺服器的 publicOrigin）";
+                                            accepted(t) => { root.save-public-url(t); }
+                                        }
+                                        VerticalLayout { alignment: center; Pill { label: "儲存"; clicked => { root.save-public-url(root.public-url); } } }
+                                    }
+                                    Text {
+                                        text: "Discord 只能顯示公開 https 網址上的圖片，區網 http 位址無法顯示封面。";
                                         color: Palette.faint;
-                                        horizontal-alignment: TextHorizontalAlignment.center;
-                                        vertical-alignment: TextVerticalAlignment.center;
+                                        font-size: 10px;
+                                        wrap: TextWrap.word-wrap;
                                     }
-                                }
-                                HorizontalLayout {
-                                    spacing: 8px;
-                                    alignment: start;
-                                    Pill { label: "新增資料夾"; icon: "plus"; clicked => { root.add-folder(); } }
-                                    Pill { label: "重新掃描"; icon: "refresh"; clicked => { root.rescan(); } }
                                 }
                             }
                         }
-
-                        // discord
-                        Rectangle {
-                            border-radius: 12px;
-                            background: Palette.raised;
-                            VerticalLayout {
-                                padding: 14px;
-                                spacing: 8px;
-                                HorizontalLayout {
-                                    spacing: 12px;
-                                    VerticalLayout {
-                                        horizontal-stretch: 1;
-                                        spacing: 3px;
-                                        Text { text: "Discord 狀態"; color: Palette.strong; font-weight: 600; }
-                                        Text { text: root.discord-status; color: Palette.muted; font-size: 10px; overflow: TextOverflow.elide; }
-                                    }
-                                    VerticalLayout {
-                                        alignment: center;
-                                        Toggle {
-                                            checked <=> root.discord-enabled;
-                                            toggled(on) => { root.discord-toggled(on); }
-                                        }
-                                    }
-                                }
-                                HorizontalLayout {
-                                    spacing: 8px;
-                                    Field {
-                                        horizontal-stretch: 1;
-                                        text <=> root.public-url;
-                                        placeholder: "公開 https 網址（封面用，留空＝用伺服器的 publicOrigin）";
-                                        accepted(t) => { root.save-public-url(t); }
-                                    }
-                                    VerticalLayout { alignment: center; Pill { label: "儲存"; clicked => { root.save-public-url(root.public-url); } } }
-                                }
-                                Text {
-                                    text: "Discord 只能顯示公開 https 網址上的圖片，區網 http 位址無法顯示封面。";
-                                    color: Palette.faint;
-                                    font-size: 10px;
-                                    wrap: TextWrap.word-wrap;
-                                }
-                            }
-                        }
+                    }
+                    ScrollThumb {
+                        x: parent.width - self.width;
+                        height: parent.height;
+                        content-h: settings-scroll.content-height;
+                        view-h: settings-scroll.height;
+                        content-y <=> settings-scroll.content-y;
                     }
                 }
             }

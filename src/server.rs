@@ -147,6 +147,41 @@ pub fn fetch(client: &Client, base: &str) -> Result<ServerData, String> {
     Ok(data)
 }
 
+/// Asks the server to rescan its music folder (POST /api/scan) and waits for it to finish,
+/// so new or changed songs show up right away. Returns a short summary.
+pub fn rescan(client: &Client, base: &str) -> Result<String, String> {
+    #[derive(Deserialize, Default)]
+    #[serde(default)]
+    struct ScanResp {
+        tracks: u64,
+        added: u64,
+        changed: u64,
+        removed: u64,
+        cached: bool,
+    }
+    let r = client
+        .post(format!("{base}/api/scan"))
+        // a big library can take a while on the first scan after many changes
+        .timeout(Duration::from_secs(600))
+        .send()
+        .map_err(|e| format!("連線失敗：{e}"))?;
+    if !r.status().is_success() {
+        return Err(format!("伺服器掃描失敗（HTTP {}）", r.status()));
+    }
+    let s: ScanResp = r.json().unwrap_or_default();
+    if s.cached {
+        return Ok("伺服器剛掃描過".into());
+    }
+    Ok(if s.added + s.changed + s.removed == 0 {
+        format!("伺服器掃描完成，沒有變更（{} 首）", s.tracks)
+    } else {
+        format!(
+            "伺服器掃描完成：新增 {}、變更 {}、移除 {}",
+            s.added, s.changed, s.removed
+        )
+    })
+}
+
 pub fn enc(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {

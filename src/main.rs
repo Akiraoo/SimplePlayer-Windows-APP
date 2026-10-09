@@ -1578,6 +1578,12 @@ impl App {
     }
 
     fn connect_server(&mut self) {
+        self.sync_server(false);
+    }
+
+    /// `rescan`: first ask the server to rescan its music folder (the refresh button),
+    /// instead of only reading the lists it already has.
+    fn sync_server(&mut self, rescan: bool) {
         let base = server::normalize(&self.cfg.server);
         if base.is_empty() {
             self.server = None;
@@ -1589,19 +1595,31 @@ impl App {
             self.server = server::load_cache(&base);
             self.rebuild_sources();
         }
-        self.set_server_status("連線中…".into());
+        self.set_server_status(if rescan { "伺服器掃描中…" } else { "連線中…" }.into());
+        if rescan {
+            self.flash("伺服器重新掃描中…".into());
+        }
         let client = self.client.clone();
         std::thread::spawn(move || {
+            // a failed rescan (e.g. an older server) still refreshes the lists below
+            let scan = rescan.then(|| server::rescan(&client, &base));
             let res = server::fetch(&client, &base);
-            post(move |app| match res {
-                Ok(data) => {
-                    let n = data.tracks.len();
-                    app.server = Some(data);
-                    app.rebuild_sources();
-                    app.update_status();
-                    app.set_server_status(format!("已連線，{n} 首歌"));
+            post(move |app| {
+                match res {
+                    Ok(data) => {
+                        let n = data.tracks.len();
+                        app.server = Some(data);
+                        app.rebuild_sources();
+                        app.update_status();
+                        app.set_server_status(format!("已連線，{n} 首歌"));
+                    }
+                    Err(e) => app.set_server_status(e),
                 }
-                Err(e) => app.set_server_status(e),
+                if let Some(scan) = scan {
+                    app.flash(match scan {
+                        Ok(msg) | Err(msg) => msg,
+                    });
+                }
             });
         });
     }
@@ -2045,7 +2063,7 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.on_rescan(|| {
         with_app(|a| {
             a.start_local_scan();
-            a.connect_server();
+            a.sync_server(true);
         });
     });
     ui.on_theme_toggled(|light| {
