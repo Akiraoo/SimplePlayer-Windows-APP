@@ -1,6 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
+call "%~dp0msvc-env.bat"
 rem Release build. The C runtime is linked statically, so the exe also runs on PCs
 rem without the Visual C++ Redistributable installed.
 set RUSTFLAGS=-C target-feature=+crt-static

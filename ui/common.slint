@@ -53,6 +53,9 @@ export component Glyph inherits Rectangle {
     in property <length> size: 32px;
     in property <length> icon-size: 18px;
     in property <bool> active: false;
+    // small text badge in the corner (e.g. "1" for repeat-one)
+    in property <string> badge: "";
+    out property <bool> hovered: ta.has-hover;
     callback clicked();
     width: size;
     height: size;
@@ -64,6 +67,22 @@ export component Glyph inherits Rectangle {
         name: root.icon;
         size: root.icon-size;
         color: root.active ? Palette.accent : (ta.has-hover ? Palette.strong : Palette.muted);
+    }
+    if root.badge != "": Rectangle {
+        x: parent.width / 2 + root.icon-size / 2 - 7px;
+        y: parent.height / 2 - root.icon-size / 2 - 3px;
+        width: 11px;
+        height: 11px;
+        border-radius: 5.5px;
+        background: Palette.accent;
+        Text {
+            text: root.badge;
+            color: Palette.accent-text;
+            font-size: 8px;
+            font-weight: 800;
+            horizontal-alignment: TextHorizontalAlignment.center;
+            vertical-alignment: TextVerticalAlignment.center;
+        }
     }
     ta := TouchArea {
         mouse-cursor: pointer;
@@ -185,21 +204,35 @@ export component Slider inherits Rectangle {
 
 export component SearchBox inherits Rectangle {
     callback edited(string);
+    // Esc while typing: hand the keyboard back to the player shortcuts
+    callback escape();
+    public function focus-input() { input.focus(); input.select-all(); }
     height: 34px;
     border-radius: self.height / 2;
     background: Palette.surface;
     border-width: 1px;
     border-color: input.has-focus ? Palette.accent-line : Palette.line;
     Icon { x: 12px; y: (parent.height - 16px) / 2; name: "search"; size: 16px; color: input.has-focus ? Palette.accent : Palette.faint; line: 2px; }
-    input := TextInput {
+    FocusScope {
         x: 36px;
         width: parent.width - 48px;
         height: parent.height;
-        color: Palette.text;
-        font-size: 12px;
-        single-line: true;
-        vertical-alignment: TextVerticalAlignment.center;
-        edited => { root.edited(self.text); }
+        key-pressed(e) => {
+            if (e.text == Key.Escape) {
+                root.escape();
+                return accept;
+            }
+            return reject;
+        }
+        input := TextInput {
+            width: parent.width;
+            height: parent.height;
+            color: Palette.text;
+            font-size: 12px;
+            single-line: true;
+            vertical-alignment: TextVerticalAlignment.center;
+            edited => { root.edited(self.text); }
+        }
     }
     Text {
         x: 36px;

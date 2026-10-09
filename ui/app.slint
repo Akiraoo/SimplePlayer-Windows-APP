@@ -101,6 +101,19 @@ export component MainWindow inherits Window {
     callback theme-toggled(bool);
     // theme colour: "#rrggbb" from a swatch or the custom field
     callback accent-picked(string);
+    // playback modes, queue, tray
+    in property <bool> shuffle: false;
+    in property <int> repeat-mode: 0; // 0 off, 1 all, 2 one
+    in property <bool> queue-view: false;
+    in-out property <bool> close-to-tray: true;
+    callback toggle-shuffle();
+    callback cycle-repeat();
+    callback seek-by(float);
+    callback volume-by(float);
+    callback queue-add(int);
+    callback queue-remove(int);
+    callback close-to-tray-toggled(bool);
+    public function refocus() { keys.focus(); }
     in property <string> app-version: "0.0.0";
     in-out property <string> accent-hex: "#f2a65a";
 
@@ -146,10 +159,11 @@ export component MainWindow inherits Window {
                 Rectangle { horizontal-stretch: 1; min-width: 12px; }
                 VerticalLayout {
                     alignment: center;
-                    SearchBox {
+                    search := SearchBox {
                         width: 320px;
                         height: 30px;
                         edited(t) => { root.search-changed(t); }
+                        escape => { keys.focus(); }
                     }
                 }
                 Rectangle { horizontal-stretch: 1; min-width: 12px; }
@@ -386,6 +400,41 @@ export component MainWindow inherits Window {
                                     clicked => {
                                         root.selected-row = i;
                                         root.row-activated(i);
+                                        keys.focus();
+                                    }
+                                }
+                                // hover action: add to queue (queue view: remove)
+                                // (Only the topmost area reports hover, so the pill also stays
+                                // visible while the pointer is on its own buttons.)
+                                Rectangle {
+                                    visible: (rta.has-hover || act.has-hover || g-add.hovered || g-del.hovered)
+                                        && !(root.queue-view && row.playing);
+                                    x: parent.width - self.width - 6px;
+                                    y: (parent.height - self.height) / 2;
+                                    width: 36px;
+                                    height: 36px;
+                                    border-radius: 18px;
+                                    background: Palette.raised;
+                                    drop-shadow-blur: 8px;
+                                    drop-shadow-color: #00000030;
+                                    act := TouchArea {}
+                                    g-add := Glyph {
+                                        x: 4px;
+                                        y: 4px;
+                                        visible: !root.queue-view;
+                                        size: 28px;
+                                        icon-size: 16px;
+                                        icon: "plus";
+                                        clicked => { root.queue-add(i); }
+                                    }
+                                    g-del := Glyph {
+                                        x: 4px;
+                                        y: 4px;
+                                        visible: root.queue-view;
+                                        size: 28px;
+                                        icon-size: 16px;
+                                        icon: "close";
+                                        clicked => { root.queue-remove(i); }
                                     }
                                 }
                             }
@@ -504,9 +553,11 @@ export component MainWindow inherits Window {
                         HorizontalLayout {
                             alignment: center;
                             spacing: 18px;
+                            VerticalLayout { alignment: center; Glyph { icon: "shuffle"; icon-size: 18px; size: 34px; active: root.shuffle; clicked => { root.toggle-shuffle(); } } }
                             VerticalLayout { alignment: center; Glyph { icon: "prev"; icon-size: 16px; size: 34px; clicked => { root.prev(); } } }
                             PlayButton { playing: root.playing; clicked => { root.toggle-play(); } }
                             VerticalLayout { alignment: center; Glyph { icon: "next"; icon-size: 16px; size: 34px; clicked => { root.next(); } } }
+                            VerticalLayout { alignment: center; Glyph { icon: "repeat"; icon-size: 18px; size: 34px; active: root.repeat-mode > 0; badge: root.repeat-mode == 2 ? "1" : ""; clicked => { root.cycle-repeat(); } } }
                         }
                         HorizontalLayout {
                             spacing: 10px;
@@ -557,6 +608,37 @@ export component MainWindow inherits Window {
         }
     }
 
+    /* ---------- keyboard shortcuts ---------- */
+    // Space play/pause · ←/→ seek 5 s · Ctrl+←/→ previous/next song · ↑/↓ volume
+    // Ctrl+F search · S shuffle · R repeat · Esc close dialogs
+    init => { keys.focus(); }
+    keys := FocusScope {
+        width: 0px;
+        height: 0px;
+        key-pressed(e) => {
+            if (e.text == " ") { root.toggle-play(); return accept; }
+            if (e.text == Key.LeftArrow) {
+                if (e.modifiers.control) { root.prev(); } else { root.seek-by(-5); }
+                return accept;
+            }
+            if (e.text == Key.RightArrow) {
+                if (e.modifiers.control) { root.next(); } else { root.seek-by(5); }
+                return accept;
+            }
+            if (e.text == Key.UpArrow) { root.volume-by(0.05); return accept; }
+            if (e.text == Key.DownArrow) { root.volume-by(-0.05); return accept; }
+            if (e.modifiers.control && (e.text == "f" || e.text == "F")) { search.focus-input(); return accept; }
+            if (!e.modifiers.control && (e.text == "s" || e.text == "S")) { root.toggle-shuffle(); return accept; }
+            if (!e.modifiers.control && (e.text == "r" || e.text == "R")) { root.cycle-repeat(); return accept; }
+            if (e.text == Key.Escape) {
+                root.show-settings = false;
+                root.show-about = false;
+                return accept;
+            }
+            return reject;
+        }
+    }
+
     /* ---------- resize borders (frameless window) ---------- */
     if !root.is-max: ResizeBorders {
         width: parent.width;
@@ -567,7 +649,7 @@ export component MainWindow inherits Window {
     /* ---------- settings ---------- */
     if root.show-settings: Rectangle {
         background: Palette.scrim;
-        TouchArea { clicked => { root.show-settings = false; } }
+        TouchArea { clicked => { root.show-settings = false; keys.focus(); } }
         Rectangle {
             width: 600px;
             height: min(parent.height - 40px, 740px);
@@ -584,7 +666,7 @@ export component MainWindow inherits Window {
                 HorizontalLayout {
                     Text { text: "設定"; font-size: 20px; font-weight: 700; color: Palette.strong; vertical-alignment: TextVerticalAlignment.center; }
                     Rectangle { horizontal-stretch: 1; }
-                    VerticalLayout { alignment: center; Glyph { icon: "close"; clicked => { root.show-settings = false; } } }
+                    VerticalLayout { alignment: center; Glyph { icon: "close"; clicked => { root.show-settings = false; keys.focus(); } } }
                 }
 
                 // theme colour
@@ -640,6 +722,23 @@ export component MainWindow inherits Window {
                                 accepted(t) => { root.accent-picked(t); }
                             }
                             VerticalLayout { alignment: center; Pill { label: "套用"; clicked => { root.accent-picked(root.accent-hex); } } }
+                        }
+                        Rectangle { height: 1px; background: Palette.line; }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 2px;
+                                Text { text: "關閉視窗時縮到系統列"; color: Palette.strong; font-weight: 600; }
+                                Text { text: "按關閉鈕後繼續在背景播放；從系統列圖示的選單「結束」才會完全關閉。"; color: Palette.muted; font-size: 10px; overflow: TextOverflow.elide; }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                Toggle {
+                                    checked <=> root.close-to-tray;
+                                    toggled(on) => { root.close-to-tray-toggled(on); }
+                                }
+                            }
                         }
                     }
                 }
@@ -847,6 +946,31 @@ export component PlayerWindow inherits Window {
     callback win-drag();
     callback win-minimize();
     callback win-resize(int);
+    in property <bool> shuffle: false;
+    in property <int> repeat-mode: 0;
+    callback toggle-shuffle();
+    callback cycle-repeat();
+    callback seek-by(float);
+
+    init => { pkeys.focus(); }
+    pkeys := FocusScope {
+        width: 0px;
+        height: 0px;
+        key-pressed(e) => {
+            if (e.text == " ") { root.toggle-play(); return accept; }
+            if (e.text == Key.LeftArrow) {
+                if (e.modifiers.control) { root.prev(); } else { root.seek-by(-5); }
+                return accept;
+            }
+            if (e.text == Key.RightArrow) {
+                if (e.modifiers.control) { root.next(); } else { root.seek-by(5); }
+                return accept;
+            }
+            if (e.text == "s" || e.text == "S") { root.toggle-shuffle(); return accept; }
+            if (e.text == "r" || e.text == "R") { root.cycle-repeat(); return accept; }
+            return reject;
+        }
+    }
 
     VerticalLayout {
         // title bar
@@ -936,10 +1060,12 @@ export component PlayerWindow inherits Window {
                 }
                 HorizontalLayout {
                     alignment: center;
-                    spacing: 22px;
+                    spacing: 12px;
+                    VerticalLayout { alignment: center; Glyph { icon: "shuffle"; icon-size: 18px; size: 34px; active: root.shuffle; clicked => { root.toggle-shuffle(); } } }
                     VerticalLayout { alignment: center; Glyph { icon: "prev"; icon-size: 16px; size: 36px; clicked => { root.prev(); } } }
                     PlayButton { size: 48px; playing: root.playing; clicked => { root.toggle-play(); } }
                     VerticalLayout { alignment: center; Glyph { icon: "next"; icon-size: 16px; size: 36px; clicked => { root.next(); } } }
+                    VerticalLayout { alignment: center; Glyph { icon: "repeat"; icon-size: 18px; size: 34px; active: root.repeat-mode > 0; badge: root.repeat-mode == 2 ? "1" : ""; clicked => { root.cycle-repeat(); } } }
                 }
             }
         }

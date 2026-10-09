@@ -2,3 +2,4 @@
 /dist
 *.exe
 *.pdb
+msvc-env.local.bat

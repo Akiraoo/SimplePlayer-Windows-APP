@@ -23,6 +23,11 @@ pub struct Config {
     pub pin_player: bool,
     /// Theme (accent) colour, "#rrggbb".
     pub accent: String,
+    pub shuffle: bool,
+    /// 0 off, 1 repeat all, 2 repeat one
+    pub repeat: u8,
+    /// The ✕ button hides the window to the tray (playback continues).
+    pub close_to_tray: bool,
 }
 
 impl Default for Config {
@@ -40,6 +45,9 @@ impl Default for Config {
             pin_main: false,
             pin_player: false,
             accent: "#f2a65a".into(),
+            shuffle: false,
+            repeat: 0,
+            close_to_tray: true,
         }
     }
 }

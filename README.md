@@ -2,7 +2,7 @@
 
 Simple Player 的 Windows 客戶端：本地音樂和 [Simple Player Web Server](https://github.com/Akiraoo/SimplePlayer-Web-Server) 的曲庫放在同一個播放器裡，內建 Discord 狀態顯示。用 Rust + [Slint](https://slint.dev) 寫成，不使用瀏覽器核心，記憶體占用低。
 
-> 開發中（v0.2，pre-release）。
+> 開發中（v0.3，pre-release）。
 
 ## 功能
 
@@ -14,6 +14,9 @@ Simple Player 的 Windows 客戶端：本地音樂和 [Simple Player Web Server]
 * **切歌動畫**：封面和歌詞讀取完成後才開始播放，切換時淡出淡入
 * **分離播放器**：右側正在播放區可以一鍵分離成獨立小視窗，列表會自動延伸補滿；兩個視窗都能各自置頂
 * **自繪介面**：自訂標題欄（Windows 11 視窗化時有圓角），深色／淺色主題，可自訂主題色
+* **播放模式與佇列**：隨機播放、全部循環／單曲循環。滑鼠移到歌曲上可「加入佇列」；佇列是一個臨時歌單，在佇列裡聽完的歌會自動移除，播放其他歌單不會影響佇列
+* **記住上次播放**：重新開啟時回到上次的播放佇列和位置（暫停狀態，按播放才會出聲）
+* **系統列**：按 ✕ 會縮到系統列繼續播放（可在設定關閉），系統列圖示的選單可以播放／暫停、切歌、結束
 * **Windows 系統媒體控制**：音量浮窗、鎖定畫面、鍵盤媒體鍵
 * **Discord 狀態**：直接推到本機的 Discord App，不用登入。操作（播放、暫停、跳轉、切歌）會立刻同步，平時由 Discord 自己跑進度條；暫停時顯示 ⏸ 並停住進度條。伺服器的歌會顯示封面（需要伺服器有公開的 https 網址）
 
@@ -28,6 +31,19 @@ Simple Player 的 Windows 客戶端：本地音樂和 [Simple Player Web Server]
 Build-Start.bat              # 開發用
 Build-Release.bat            # 產生 target\release\SimplePlayer.exe；有安裝 NSIS 時也產生 dist\SimplePlayer-Setup-<版本>.exe
 ```
+
+## 快捷鍵
+
+| 按鍵 | 功能 |
+| --- | --- |
+| 空白鍵 | 播放／暫停 |
+| ← / → | 倒退／快轉 5 秒 |
+| Ctrl + ← / → | 上一首／下一首 |
+| ↑ / ↓ | 音量 |
+| Ctrl + F | 搜尋（Esc 離開搜尋框） |
+| S | 隨機播放 |
+| R | 循環模式（關 → 全部 → 單曲） |
+| Esc | 關閉設定／關於 |
 
 ## 設定
 

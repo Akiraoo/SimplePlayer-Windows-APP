@@ -1,6 +1,6 @@
 [package]
 name = "simpleplayer-windows"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "Simple Player for Windows: local library + Simple Player Web Server, with Discord Rich Presence"
@@ -24,6 +24,7 @@ rfd = "0.15"
 
 [target.'cfg(windows)'.dependencies]
 souvlaki = "0.8"
+tray-icon = "0.19"
 
 [build-dependencies]
 slint-build = "1.18"

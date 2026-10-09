@@ -8,6 +8,8 @@ mod library;
 mod media;
 mod player;
 mod server;
+mod session;
+mod tray;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -25,6 +27,7 @@ slint::include_modules!();
 
 #[derive(Clone, PartialEq, Debug)]
 enum View {
+    Queue,
     Local,
     LocalFolder(String),
     Server,
@@ -35,6 +38,7 @@ enum View {
 impl View {
     fn key(&self) -> String {
         match self {
+            View::Queue => "queue".into(),
             View::Local => "local".into(),
             View::LocalFolder(n) => format!("lf:{n}"),
             View::Server => "server".into(),
@@ -59,6 +63,22 @@ struct App {
     /// Bumped on every song switch; stale background loads are dropped.
     load_gen: u64,
     switching: bool,
+    /// Play order before shuffling (restored when shuffle is turned off).
+    unshuffled: Vec<Track>,
+    /// The user's queue ("up next"): a temporary playlist that plays before the rest of the
+    /// current list. A queued song is removed once it has been played through (or skipped).
+    upnext: Vec<Track>,
+    /// Index in `upnext` of the song playing now, if it came from the queue.
+    upnext_cur: Option<usize>,
+    /// Queue view: row -> index into `queue`.
+    visible_qidx: Vec<usize>,
+    rng: u64,
+    /// Restored session: open the song paused at this position.
+    resume_at: Option<f64>,
+    /// After a restore, stay quiet (no Discord) until the user presses play.
+    idle_restore: bool,
+    last_session_save: Instant,
+    tray: Option<tray::Tray>,
     cfg: Config,
     client: reqwest::blocking::Client,
     local: Vec<Track>,
@@ -227,6 +247,16 @@ impl App {
             views.push(None);
         };
 
+        {
+            header(&mut items, &mut views, "正在播放");
+            items.push(SourceItem {
+                label: "播放佇列".into(),
+                count: self.upnext.len().to_string().into(),
+                icon: "list".into(),
+                header: false,
+            });
+            views.push(Some(View::Queue));
+        }
         if !self.cfg.local_folders.is_empty() || !self.local.is_empty() {
             header(&mut items, &mut views, "本地音樂");
             items.push(SourceItem {
@@ -289,7 +319,12 @@ impl App {
                 .iter()
                 .flatten()
                 .find(|v| v.key() == wanted)
-                .or_else(|| views.iter().flatten().find(|v| **v != View::Setup))
+                .or_else(|| {
+                    views
+                        .iter()
+                        .flatten()
+                        .find(|v| **v != View::Setup && **v != View::Queue)
+                })
                 .or_else(|| views.iter().flatten().next())
                 .cloned()
                 .unwrap_or(View::Setup);
@@ -338,6 +373,7 @@ impl App {
 
     fn tracks_for_view(&self) -> Vec<Track> {
         match &self.view {
+            View::Queue => self.upnext.clone(),
             View::Local => self.local.clone(),
             View::LocalFolder(f) => self
                 .local
@@ -374,12 +410,18 @@ impl App {
 
     fn refresh_list(&mut self) {
         let q = self.query.trim().to_lowercase();
-        let mut rows: Vec<Track> = self
-            .tracks_for_view()
-            .into_iter()
-            .filter(|t| library::matches(t, &q))
-            .collect();
-        if let Some((col, asc)) = self.sort {
+        let queue_view = self.view == View::Queue;
+        self.visible_qidx.clear();
+        let mut rows: Vec<Track> = Vec::new();
+        for (i, t) in self.tracks_for_view().into_iter().enumerate() {
+            if library::matches(&t, &q) {
+                if queue_view {
+                    self.visible_qidx.push(i);
+                }
+                rows.push(t);
+            }
+        }
+        if let (Some((col, asc)), false) = (self.sort, queue_view) {
             let key = |t: &Track| -> String {
                 match col {
                     1 => t.title.to_lowercase(),
@@ -403,10 +445,12 @@ impl App {
             View::Local => "全部本地歌曲".to_string(),
             View::Server => "全部歌曲".to_string(),
             View::Playlist(n) | View::LocalFolder(n) => n.clone(),
+            View::Queue => "播放佇列".to_string(),
             View::Setup => "Simple Player".to_string(),
         };
         if let Some(ui) = self.ui() {
             ui.set_list_title(title.into());
+            ui.set_queue_view(queue_view);
             ui.set_list_info(format!("{} 首", self.visible.len()).into());
             ui.set_sort_column(self.sort.map(|s| s.0).unwrap_or(-1));
             ui.set_sort_asc(self.sort.map(|s| s.1).unwrap_or(true));
@@ -437,7 +481,7 @@ impl App {
                     Source::Server => "cloud",
                 }
                 .into(),
-                playing: Some(t.key.as_str()) == cur,
+                playing: self.row_is_current(i, t, cur),
             })
             .collect();
         if let Some(ui) = self.ui() {
@@ -451,13 +495,24 @@ impl App {
         let model = ui.get_tracks();
         let cur = self.current.as_ref().map(|t| t.key.as_str());
         for (i, t) in self.visible.iter().enumerate() {
-            let playing = Some(t.key.as_str()) == cur;
+            let playing = self.row_is_current(i, t, cur);
             if let Some(mut row) = model.row_data(i) {
                 if row.playing != playing {
                     row.playing = playing;
                     model.set_row_data(i, row);
                 }
             }
+        }
+    }
+
+    /// In the queue view only the actual queue position is "playing" (a song can be queued twice).
+    fn row_is_current(&self, row: usize, t: &Track, cur: Option<&str>) -> bool {
+        if self.view == View::Queue {
+            self.current.is_some()
+                && self.upnext_cur.is_some()
+                && self.visible_qidx.get(row) == self.upnext_cur.as_ref()
+        } else {
+            Some(t.key.as_str()) == cur
         }
     }
 
@@ -479,29 +534,301 @@ impl App {
         if index >= self.visible.len() {
             return;
         }
+        self.idle_restore = false;
+        if self.view == View::Queue {
+            // play that queued song; the queue itself keeps its order
+            if let Some(&qi) = self.visible_qidx.get(index) {
+                self.play_upnext(qi);
+            }
+            return;
+        }
+        // Any other list becomes the play order; the user's queue is left alone.
+        self.unshuffled = self.visible.clone();
         self.queue = self.visible.clone();
         self.queue_pos = index;
+        if self.cfg.shuffle {
+            self.shuffle_rest();
+        }
         self.play_current();
     }
 
-    /// Switches to `queue[queue_pos]`: the now-playing area fades out, cover and lyrics are
-    /// loaded in the background, and only then the new song is shown and starts playing.
+    fn play_upnext(&mut self, qi: usize) {
+        let Some(t) = self.upnext.get(qi).cloned() else {
+            return;
+        };
+        self.idle_restore = false;
+        self.upnext_cur = Some(qi);
+        self.start(t);
+        self.queue_changed();
+    }
+
+    /* ---------- queue, shuffle, repeat ---------- */
+
+    fn rand(&mut self) -> u64 {
+        // xorshift64*
+        let mut x = self.rng;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.rng = x;
+        x.wrapping_mul(0x2545f4914f6cdd1d)
+    }
+
+    /// Puts the current song first and shuffles everything after it.
+    fn shuffle_rest(&mut self) {
+        if self.queue.is_empty() {
+            return;
+        }
+        let cur = self.queue.remove(self.queue_pos.min(self.queue.len() - 1));
+        for i in (1..self.queue.len()).rev() {
+            let j = (self.rand() % (i as u64 + 1)) as usize;
+            self.queue.swap(i, j);
+        }
+        self.queue.insert(0, cur);
+        self.queue_pos = 0;
+    }
+
+    fn toggle_shuffle(&mut self) {
+        self.cfg.shuffle = !self.cfg.shuffle;
+        config::save(&self.cfg);
+        if self.cfg.shuffle {
+            self.unshuffled = self.queue.clone();
+            self.shuffle_rest();
+        } else if !self.unshuffled.is_empty() {
+            let key = self.queue.get(self.queue_pos).map(|t| t.key.clone());
+            self.queue = std::mem::take(&mut self.unshuffled);
+            self.queue_pos = key
+                .and_then(|k| self.queue.iter().position(|t| t.key == k))
+                .unwrap_or(0);
+        }
+        self.push_modes();
+        self.queue_changed();
+    }
+
+    fn cycle_repeat(&mut self) {
+        self.cfg.repeat = (self.cfg.repeat + 1) % 3;
+        config::save(&self.cfg);
+        self.push_modes();
+    }
+
+    fn push_modes(&self) {
+        if let Some(ui) = self.ui() {
+            ui.set_shuffle(self.cfg.shuffle);
+            ui.set_repeat_mode(self.cfg.repeat as i32);
+            ui.set_close_to_tray(self.cfg.close_to_tray);
+        }
+        if let Some(pw) = self.pw.upgrade() {
+            pw.set_shuffle(self.cfg.shuffle);
+            pw.set_repeat_mode(self.cfg.repeat as i32);
+        }
+    }
+
+    /// Sidebar count and the queue view after the queue changed.
+    fn queue_changed(&mut self) {
+        if self.view == View::Queue {
+            self.refresh_list();
+        }
+        if let (Some(ui), Some(i)) = (
+            self.ui(),
+            self.source_views
+                .iter()
+                .position(|v| v == &Some(View::Queue)),
+        ) {
+            let model = ui.get_sources();
+            if let Some(mut row) = model.row_data(i) {
+                row.count = self.upnext.len().to_string().into();
+                model.set_row_data(i, row);
+            }
+        }
+    }
+
+    fn queue_add(&mut self, row: usize) {
+        let Some(t) = self.visible.get(row).cloned() else {
+            return;
+        };
+        self.flash(format!("已加入佇列：{}", t.title));
+        self.upnext.push(t);
+        self.queue_changed();
+    }
+
+    fn queue_remove(&mut self, row: usize) {
+        let Some(&qi) = self.visible_qidx.get(row) else {
+            return;
+        };
+        if Some(qi) == self.upnext_cur || qi >= self.upnext.len() {
+            return; // the playing song stays until it is done
+        }
+        self.upnext.remove(qi);
+        if let Some(k) = self.upnext_cur.as_mut() {
+            if *k > qi {
+                *k -= 1;
+            }
+        }
+        self.queue_changed();
+    }
+
+    /* ---------- session (remember last playback) ---------- */
+
+    fn save_session(&mut self) {
+        self.last_session_save = Instant::now();
+        let position = if self.player.is_active() {
+            self.player.position()
+        } else {
+            self.resume_at.unwrap_or(0.0)
+        };
+        session::save(&session::Session {
+            queue: self.queue.iter().map(|t| t.key.clone()).collect(),
+            unshuffled: if self.cfg.shuffle {
+                self.unshuffled.iter().map(|t| t.key.clone()).collect()
+            } else {
+                Vec::new()
+            },
+            pos: self.queue_pos,
+            position,
+            upnext: self.upnext.iter().map(|t| t.key.clone()).collect(),
+            upnext_cur: self.upnext_cur,
+        });
+    }
+
+    /// Reopens the last play order and queue, paused at the last position
+    /// (no sound, no Discord until the user presses play).
+    fn restore_session(&mut self) {
+        let Some(sess) = session::load() else { return };
+        let mut by_key: HashMap<&str, &Track> = HashMap::new();
+        for t in &self.local {
+            by_key.insert(t.key.as_str(), t);
+        }
+        if let Some(s) = &self.server {
+            for t in &s.tracks {
+                by_key.insert(t.key.as_str(), t);
+            }
+        }
+        let pick = |keys: &[String]| -> Vec<Track> {
+            keys.iter()
+                .filter_map(|k| by_key.get(k.as_str()).map(|t| (*t).clone()))
+                .collect()
+        };
+        // The saved position counts duplicates: find the same occurrence again.
+        let locate = |keys: &[String], list: &[Track], pos: usize| -> Option<usize> {
+            let key = keys.get(pos)?;
+            let nth = keys[..pos].iter().filter(|k| *k == key).count();
+            list.iter()
+                .enumerate()
+                .filter(|(_, t)| &t.key == key)
+                .map(|(i, _)| i)
+                .nth(nth)
+                .or_else(|| list.iter().position(|t| &t.key == key))
+        };
+        let queue = pick(&sess.queue);
+        let unshuffled = pick(&sess.unshuffled);
+        let upnext = pick(&sess.upnext);
+        let ctx_pos = locate(&sess.queue, &queue, sess.pos);
+        let up_pos = sess
+            .upnext_cur
+            .and_then(|i| locate(&sess.upnext, &upnext, i));
+        self.unshuffled = if unshuffled.is_empty() {
+            queue.clone()
+        } else {
+            unshuffled
+        };
+        self.queue = queue;
+        self.queue_pos = ctx_pos.unwrap_or(0);
+        self.upnext = upnext;
+        let resume = Some(sess.position.max(0.0));
+        if let Some(k) = up_pos {
+            self.upnext_cur = Some(k);
+            self.resume_at = resume;
+            self.idle_restore = true;
+            let t = self.upnext[k].clone();
+            self.start(t);
+        } else if ctx_pos.is_some() {
+            self.resume_at = resume;
+            self.idle_restore = true;
+            self.play_current();
+        }
+        self.queue_changed();
+    }
+
+    /* ---------- tray ---------- */
+
+    fn hide_to_tray(&mut self) {
+        let Some(ui) = self.ui() else { return };
+        if self.tray.is_none() {
+            // no tray icon: hiding would make the app unreachable, so just minimize
+            ui.window().set_minimized(true);
+            return;
+        }
+        use slint::winit_030::WinitWindowAccessor;
+        ui.window().with_winit_window(|w| w.set_visible(false));
+        self.save_session();
+    }
+
+    fn show_from_tray(&mut self) {
+        let Some(ui) = self.ui() else { return };
+        use slint::winit_030::WinitWindowAccessor;
+        ui.window().with_winit_window(|w| w.set_visible(true));
+        bring_to_front(ui.window());
+    }
+
+    fn poll_tray(&mut self) {
+        let cmds = match &self.tray {
+            Some(t) => t.poll(),
+            None => return,
+        };
+        for c in cmds {
+            match c {
+                tray::TrayCmd::Show => self.show_from_tray(),
+                tray::TrayCmd::TogglePlay => self.toggle_play(),
+                tray::TrayCmd::Prev => self.prev(),
+                tray::TrayCmd::Next => self.next(),
+                tray::TrayCmd::Quit => {
+                    let _ = slint::quit_event_loop();
+                }
+            }
+        }
+        let tip = match &self.current {
+            Some(t) if !t.artist.is_empty() => format!("{} – {}", t.title, t.artist),
+            Some(t) => t.title.clone(),
+            None => "Simple Player".to_string(),
+        };
+        // Windows limits tray tooltips to 127 characters
+        let tip: String = tip.chars().take(120).collect();
+        if let Some(t) = self.tray.as_mut() {
+            t.set_tooltip(&tip);
+        }
+    }
+
+    /// Short message in the status line.
+    fn flash(&mut self, msg: String) {
+        self.status = msg;
+        self.update_status();
+    }
+
+    /// Plays `queue[queue_pos]` (the current list, not the user's queue).
     fn play_current(&mut self) {
         let Some(t) = self.queue.get(self.queue_pos).cloned() else {
             return;
         };
+        self.upnext_cur = None;
+        self.start(t);
+    }
+
+    /// Switches to `t`: the now-playing area fades out, cover and lyrics are loaded in the
+    /// background, and only then the new song is shown and starts playing.
+    fn start(&mut self, t: Track) {
         self.load_gen += 1;
         self.switching = true;
         let gen = self.load_gen;
         self.player.stop();
         self.current = Some(t.clone());
         self.cover_file = None;
-        self.last_playing = true;
+        // a restored session opens paused: don't flash the pause icon meanwhile
+        self.last_playing = self.resume_at.is_none();
         self.lyrics.clear();
         self.active_lyric = -1;
         if let Some(ui) = self.ui() {
             ui.set_switching(true);
-            ui.set_playing(true);
+            ui.set_playing(self.resume_at.is_none());
             ui.set_progress(0.0);
             ui.set_position_text("0:00".into());
             ui.set_active_lyric(-1);
@@ -628,7 +955,15 @@ impl App {
             pw.set_switching(false);
         }
 
-        // Now start the audio.
+        // Now start the audio (a restored session opens paused at the saved position).
+        let resume = self.resume_at.take();
+        let paused = resume.is_some();
+        if paused {
+            self.last_playing = false;
+            if let Some(ui) = self.ui() {
+                ui.set_playing(false);
+            }
+        }
         let ext = Some(t.ext.clone());
         match t.source {
             Source::Local => {
@@ -640,7 +975,7 @@ impl App {
                             .map_err(|e| format!("無法開啟檔案：{e}"))
                     }),
                     ext,
-                    false,
+                    paused,
                 );
             }
             Source::Server => {
@@ -656,9 +991,12 @@ impl App {
                             .map_err(|e| format!("無法串流：{e}"))
                     }),
                     ext,
-                    false,
+                    paused,
                 );
             }
+        }
+        if let Some(at) = resume.filter(|p| *p > 1.0) {
+            self.player.seek(at);
         }
         if let Some(m) = self.media.as_mut() {
             let cover = self
@@ -672,7 +1010,10 @@ impl App {
                 cover.as_deref(),
                 t.duration_ms as f64 / 1000.0,
             );
-            m.set_state(true, 0.0);
+            m.set_state(!paused, resume.unwrap_or(0.0));
+        }
+        if self.view == View::Queue {
+            self.refresh_list();
         }
         // Presence is pushed as soon as the decoder knows the duration (see sync_state).
         self.opened_at = Instant::now();
@@ -689,7 +1030,7 @@ impl App {
             .iter()
             .map(|(t, text)| LyricLine {
                 text: if text.trim().is_empty() {
-                    "♪".into()
+                    "…".into()
                 } else {
                     text.as_str().into()
                 },
@@ -723,17 +1064,17 @@ impl App {
             return; // a song is being prepared and will start by itself
         }
         if !self.player.is_active() {
-            if self.current.is_none() {
-                if let Some(ui) = self.ui() {
-                    let sel = ui.get_selected_row();
-                    self.play_row(if sel >= 0 { sel as usize } else { 0 });
-                }
-            } else {
-                self.play_current();
+            self.idle_restore = false;
+            if let Some(t) = self.current.clone() {
+                self.start(t);
+            } else if let Some(ui) = self.ui() {
+                let sel = ui.get_selected_row();
+                self.play_row(if sel >= 0 { sel as usize } else { 0 });
             }
             return;
         }
         if self.player.is_paused() {
+            self.idle_restore = false;
             self.player.play();
         } else {
             self.player.pause();
@@ -742,20 +1083,96 @@ impl App {
     }
 
     fn next(&mut self) {
-        if self.queue.is_empty() {
+        self.advance(false);
+    }
+
+    /// Next song. `auto` = the current one ended by itself (repeat-one replays it).
+    /// Queued songs come first; after them the current list continues where it was.
+    fn advance(&mut self, auto: bool) {
+        if self.queue.is_empty() && self.upnext_cur.is_none() {
             return;
         }
-        if self.queue_pos + 1 < self.queue.len() {
+        self.idle_restore = false;
+        if auto && self.cfg.repeat == 2 {
+            if let Some(t) = self.current.clone() {
+                self.start(t);
+            }
+            return;
+        }
+        // Playing from the queue (a temporary playlist): a song that was listened to the end is
+        // removed; skipping keeps it. The queue only plays while you are in it, so other lists
+        // never touch it.
+        if let Some(k) = self.upnext_cur {
+            let mut next = k + 1;
+            if auto && k < self.upnext.len() {
+                self.upnext.remove(k);
+                next = k;
+            }
+            self.upnext_cur = None;
+            let n = self.upnext.len();
+            let pick = if n == 0 {
+                None
+            } else if self.cfg.shuffle && n > 1 {
+                let mut r = (self.rand() % n as u64) as usize;
+                if !auto && r == k {
+                    r = (r + 1) % n; // a skip should move on
+                }
+                Some(r)
+            } else if next < n {
+                Some(next)
+            } else if self.cfg.repeat >= 1 {
+                Some(0) // repeat all: the songs that were skipped come round again
+            } else {
+                None
+            };
+            match pick {
+                Some(i) => self.play_upnext(i),
+                None => {
+                    self.player.stop();
+                    self.current = None;
+                    self.mark_playing();
+                    self.sync_state(true);
+                }
+            }
+            self.queue_changed();
+            return;
+        }
+        if self.queue.is_empty() {
+            self.player.stop();
+            self.sync_state(true);
+        } else if self.queue_pos + 1 < self.queue.len() {
             self.queue_pos += 1;
+            self.play_current();
+        } else if self.cfg.repeat >= 1 {
+            // repeat all: start over (a fresh order when shuffling)
+            self.queue_pos = 0;
+            if self.cfg.shuffle && self.queue.len() > 2 {
+                let last = self.queue.last().map(|t| t.key.clone());
+                self.shuffle_rest();
+                // don't play the song that just ended right away again
+                if self.queue.first().map(|t| &t.key) == last.as_ref() {
+                    self.queue.swap(0, 1);
+                }
+            }
             self.play_current();
         } else {
             self.player.stop();
             self.sync_state(true);
         }
+        self.queue_changed();
     }
 
     fn prev(&mut self) {
-        if self.queue.is_empty() {
+        if self.queue.is_empty() && self.upnext_cur.is_none() {
+            return;
+        }
+        if let Some(k) = self.upnext_cur {
+            if self.player.position() > 3.0 || k == 0 {
+                self.player.seek(0.0);
+                self.presence_dirty.get_or_insert_with(Instant::now);
+            } else {
+                self.play_upnext(k - 1);
+            }
             return;
         }
         if self.player.position() > 3.0 || self.queue_pos == 0 {
@@ -764,7 +1181,30 @@ impl App {
             return;
         }
         self.queue_pos -= 1;
+        self.idle_restore = false;
         self.play_current();
+    }
+
+    fn seek_by(&mut self, delta: f64) {
+        if !self.player.is_active() {
+            return;
+        }
+        let d = self.player.duration();
+        let mut p = self.player.position() + delta;
+        if d > 0.0 {
+            p = p.min(d - 0.5);
+        }
+        self.player.seek(p.max(0.0));
+        self.presence_dirty.get_or_insert_with(Instant::now);
+    }
+
+    fn volume_by(&mut self, delta: f32) {
+        let v = (self.cfg.volume + delta).clamp(0.0, 1.0);
+        self.cfg.volume = v;
+        self.player.set_volume(v);
+        if let Some(ui) = self.ui() {
+            ui.set_volume(v);
+        }
     }
 
     fn seek_fraction(&mut self, f: f32) {
@@ -777,7 +1217,7 @@ impl App {
 
     fn on_player_event(&mut self, ev: PlayerEvent) {
         match ev {
-            PlayerEvent::Ended => self.next(),
+            PlayerEvent::Ended => self.advance(true),
             PlayerEvent::Error(e) => {
                 self.status = e;
                 self.update_status();
@@ -814,6 +1254,9 @@ impl App {
             ui.set_active_lyric(active);
         }
         self.mirror_player(false);
+        if self.last_session_save.elapsed() > Duration::from_secs(15) {
+            self.save_session();
+        }
         if playing != self.last_playing {
             self.last_playing = playing;
             self.sync_state(true);
@@ -902,7 +1345,11 @@ impl App {
         }
         self.presence_dirty = None;
         self.last_presence = Instant::now();
-        let Some(t) = self.current.as_ref().filter(|_| active) else {
+        let Some(t) = self
+            .current
+            .as_ref()
+            .filter(|_| active && !self.idle_restore)
+        else {
             self.discord.set_activity(None);
             return;
         };
@@ -1330,6 +1777,19 @@ fn main() -> Result<(), slint::PlatformError> {
         pw_shown: false,
         load_gen: 0,
         switching: false,
+        unshuffled: Vec::new(),
+        upnext: Vec::new(),
+        upnext_cur: None,
+        visible_qidx: Vec::new(),
+        rng: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0x9e3779b97f4a7c15)
+            | 1,
+        resume_at: None,
+        idle_restore: false,
+        last_session_save: Instant::now(),
+        tray: None,
         local: library::load_local_cache(),
         server: None,
         client: server::client(),
@@ -1359,11 +1819,14 @@ fn main() -> Result<(), slint::PlatformError> {
 
     with_app(|app| {
         app.push_folders();
+        app.push_modes();
         app.rebuild_sources();
         app.update_status();
         app.start_local_scan();
         app.connect_server();
         app.refresh_discord_status();
+        // local and server libraries come from their caches at this point
+        app.restore_session();
     });
 
     /* ---------- callbacks ---------- */
@@ -1527,13 +1990,57 @@ fn main() -> Result<(), slint::PlatformError> {
                 ui.set_is_max(max);
             }
         });
+        // ✕ / Alt+F4: hide to the tray (playback goes on) or quit, depending on the setting.
         ui.on_win_close(|| {
-            let _ = slint::quit_event_loop();
+            let to_tray = with_app(|a| a.cfg.close_to_tray && a.tray.is_some()).unwrap_or(false);
+            if to_tray {
+                with_app(|a| a.hide_to_tray());
+            } else {
+                let _ = slint::quit_event_loop();
+            }
         });
-        // Alt+F4 on the main window closes the whole app, even with the player detached.
         ui.window().on_close_requested(|| {
-            let _ = slint::quit_event_loop();
-            slint::CloseRequestResponse::HideWindow
+            let to_tray = with_app(|a| a.cfg.close_to_tray && a.tray.is_some()).unwrap_or(false);
+            if to_tray {
+                with_app(|a| a.hide_to_tray());
+                slint::CloseRequestResponse::KeepWindowShown
+            } else {
+                let _ = slint::quit_event_loop();
+                slint::CloseRequestResponse::HideWindow
+            }
+        });
+        ui.on_close_to_tray_toggled(|on| {
+            with_app(|a| {
+                a.cfg.close_to_tray = on;
+                config::save(&a.cfg);
+            });
+        });
+        ui.on_toggle_shuffle(|| {
+            with_app(|a| a.toggle_shuffle());
+        });
+        ui.on_cycle_repeat(|| {
+            with_app(|a| a.cycle_repeat());
+        });
+        ui.on_seek_by(|d| {
+            with_app(|a| a.seek_by(d as f64));
+        });
+        ui.on_volume_by(|d| {
+            with_app(|a| a.volume_by(d));
+        });
+        ui.on_queue_add(|i| {
+            with_app(|a| a.queue_add(i.max(0) as usize));
+        });
+        ui.on_queue_remove(|i| {
+            with_app(|a| a.queue_remove(i.max(0) as usize));
+        });
+        pw.on_toggle_shuffle(|| {
+            with_app(|a| a.toggle_shuffle());
+        });
+        pw.on_cycle_repeat(|| {
+            with_app(|a| a.cycle_repeat());
+        });
+        pw.on_seek_by(|d| {
+            with_app(|a| a.seek_by(d as f64));
         });
         ui.on_pin_toggled(|on| {
             with_app(|a| {
@@ -1630,17 +2137,48 @@ fn main() -> Result<(), slint::PlatformError> {
         let media = media::Media::new(hwnd, |key| post(move |app| app.handle_media_key(key)));
         with_app(|a| {
             a.media = media;
+            // a song restored before the media controls existed
+            if let (Some(m), Some(t)) = (a.media.as_mut(), a.current.as_ref()) {
+                let cover = a
+                    .cover_file
+                    .as_ref()
+                    .map(|f| format!("file://{}", f.display()));
+                m.set_track(
+                    &t.title,
+                    &t.artist,
+                    &t.album,
+                    cover.as_deref(),
+                    t.duration_ms as f64 / 1000.0,
+                );
+                m.set_state(
+                    a.player.is_active() && !a.player.is_paused(),
+                    a.player.position(),
+                );
+            }
             if a.cfg.detached {
                 a.set_detached(true);
             }
         });
     });
 
-    slint::run_event_loop()?;
+    with_app(|a| a.tray = tray::Tray::new());
+    let tray_timer = slint::Timer::default();
+    tray_timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(120),
+        || {
+            with_app(|a| a.poll_tray());
+        },
+    );
+
+    // Keep running while the main window is hidden in the tray; quit_event_loop() ends it.
+    slint::run_event_loop_until_quit()?;
 
     with_app(|a| {
         a.discord.set_activity(None);
+        a.save_session();
         config::save(&a.cfg);
+        a.tray = None; // removes the tray icon now (the app state is leaked below)
     });
     // Give the Discord thread a moment to clear the status.
     std::thread::sleep(Duration::from_millis(150));
