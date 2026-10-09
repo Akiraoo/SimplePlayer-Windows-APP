@@ -30,6 +30,14 @@ pub struct Config {
     pub close_to_tray: bool,
     /// Key of the song highlighted last (restored on start).
     pub last_selected: String,
+    /// Detached player window: x, y, width, height (physical pixels).
+    pub pw_geom: Option<[i32; 4]>,
+    /// Audio output device name; empty = system default.
+    pub output_device: String,
+    /// WASAPI exclusive mode (bit-perfect, the song's own format; other apps go silent).
+    pub exclusive: bool,
+    /// Settings → 緩衝大小: 0 標準, 1 大, 2 超大.
+    pub buffer_level: u8,
 }
 
 impl Default for Config {
@@ -51,6 +59,10 @@ impl Default for Config {
             repeat: 0,
             close_to_tray: true,
             last_selected: String::new(),
+            pw_geom: None,
+            output_device: String::new(),
+            exclusive: false,
+            buffer_level: 1,
         }
     }
 }

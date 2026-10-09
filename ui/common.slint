@@ -301,18 +301,30 @@ export component Art inherits Rectangle {
 }
 
 // Three bouncing bars that mark the playing row.
-export component Eq inherits Rectangle {
-    in property <bool> running;
+// Marks the playing row: a play triangle in the theme colour (static, costs no redraws).
+export component PlayingMark inherits Rectangle {
     in property <color> tint: Palette.accent;
     width: 14px;
     height: 14px;
-    property <float> t: root.running ? animation-tick() / 1ms : 0;
+    Icon {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        name: "play";
+        size: 14px;
+        color: root.tint;
+    }
+}
+
+// Three still dots shown over the cover while a slow song loads.
+export component LoadingDots inherits Rectangle {
+    in property <color> tint: Palette.muted;
+    width: 22px;
+    height: 6px;
     for k in [0, 1, 2]: Rectangle {
-        x: k * 5px;
-        width: 3px;
-        height: root.running ? 3px + 11px * abs(sin((root.t * 0.45 + k * 70) * 1deg)) : 4px + k * 3px;
-        y: root.height - self.height;
-        border-radius: 1.5px;
+        x: k * 8px;
+        width: 6px;
+        height: 6px;
+        border-radius: 3px;
         background: root.tint;
     }
 }
@@ -433,11 +445,14 @@ export component NowPanel inherits Rectangle {
     callback lyric-clicked(int);
     property <length> lyric-row: 40px;
 
+    // Keep the active line centred. Rows report their own position (they can be one, two or
+    // more lines high), see `changed active` below.
+    function follow(row-y: length, row-h: length) {
+        lyric-flick.content-y = min(0px, max(lyric-flick.height - lyric-flick.content-height,
+            lyric-flick.height / 2 - (row-y + row-h / 2)));
+    }
     changed active-lyric => {
-        if (root.active-lyric >= 0) {
-            lyric-list.content-y = min(0px, max(lyric-list.visible-height - lyric-list.content-height,
-                lyric-list.visible-height / 2 - (root.active-lyric + 0.5) * root.lyric-row));
-        }
+        if (root.active-lyric < 0) { lyric-flick.content-y = 0px; }
     }
 
     VerticalLayout {
@@ -499,40 +514,50 @@ export component NowPanel inherits Rectangle {
             vertical-stretch: 1;
             opacity: root.switching ? 0 : 1;
             animate opacity { duration: 200ms; easing: ease-in-out; }
-            // The list reaches into the right padding so its scrollbar sits clear of the
-            // active-line marker.
-            lyric-list := ListView {
+            // Every line gets the height its (wrapped) text needs, also when the active line is
+            // enlarged, so nothing is cut off. All lines exist at once (a song has ~100 at most).
+            lyric-flick := Flickable {
                 x: 0;
-                width: lyric-box.width + root.pad - 4px;
+                width: lyric-box.width;
+                height: parent.height;
+                content-width: self.width;
+                content-height: lyric-col.preferred-height;
                 animate content-y { duration: 320ms; easing: ease-out; }
-                for l[i] in root.lyrics: Rectangle {
-                    height: root.lyric-row;
-                    Text {
-                        x: 0;
-                        width: lyric-box.width - 8px;
-                        height: parent.height;
-                        text: l.text;
-                        wrap: TextWrap.word-wrap;
-                        overflow: TextOverflow.elide;
-                        color: i == root.active-lyric ? Palette.strong
-                            : (lta.has-hover && l.timed ? Palette.text : Palette.faint);
-                        font-size: i == root.active-lyric ? 15px : 12px;
-                        font-weight: i == root.active-lyric ? 700 : 400;
-                        vertical-alignment: TextVerticalAlignment.center;
-                        animate color { duration: 200ms; }
-                    }
-                    if i == root.active-lyric: Rectangle {
-                        x: lyric-box.width - 3px;
-                        y: 10px;
-                        width: 3px;
-                        height: parent.height - 20px;
-                        border-radius: 1.5px;
-                        background: Palette.accent;
-                    }
-                    lta := TouchArea {
-                        mouse-cursor: l.timed ? MouseCursor.pointer : MouseCursor.default;
-                        clicked => {
-                            if (l.timed) { root.lyric-clicked(i); }
+                lyric-col := VerticalLayout {
+                    width: lyric-flick.width;
+                    for l[i] in root.lyrics: Rectangle {
+                        property <bool> active: i == root.active-lyric;
+                        height: max(root.lyric-row, txt.preferred-height + 14px);
+                        changed active => {
+                            if (self.active) { root.follow(self.y, self.height); }
+                        }
+                        txt := Text {
+                            x: 0;
+                            y: (parent.height - self.height) / 2;
+                            width: parent.width - 12px;
+                            height: self.preferred-height;
+                            text: l.text;
+                            wrap: TextWrap.word-wrap;
+                            color: i == root.active-lyric ? Palette.strong
+                                : (lta.has-hover && l.timed ? Palette.text : Palette.faint);
+                            font-size: i == root.active-lyric ? 15px : 12px;
+                            font-weight: i == root.active-lyric ? 700 : 400;
+                            vertical-alignment: TextVerticalAlignment.center;
+                            animate color { duration: 200ms; }
+                        }
+                        if i == root.active-lyric: Rectangle {
+                            x: parent.width - 3px;
+                            y: 8px;
+                            width: 3px;
+                            height: parent.height - 16px;
+                            border-radius: 1.5px;
+                            background: Palette.accent;
+                        }
+                        lta := TouchArea {
+                            mouse-cursor: l.timed ? MouseCursor.pointer : MouseCursor.default;
+                            clicked => {
+                                if (l.timed) { root.lyric-clicked(i); }
+                            }
                         }
                     }
                 }
@@ -548,11 +573,9 @@ export component NowPanel inherits Rectangle {
     }
 
     // Small loader over the cover; only fades in when loading takes a while.
-    loader := Eq {
+    loader := LoadingDots {
         x: (root.width - self.width) / 2;
         y: root.pad + root.art-size / 2 - self.height / 2;
-        running: root.switching;
-        tint: Palette.muted;
         opacity: 0;
     }
     states [

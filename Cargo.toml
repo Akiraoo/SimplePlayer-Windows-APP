@@ -1,6 +1,6 @@
 [package]
 name = "simpleplayer-windows"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "Simple Player for Windows: local library + Simple Player Web Server, with Discord Rich Presence"
@@ -25,10 +25,19 @@ rfd = "0.15"
 [target.'cfg(windows)'.dependencies]
 souvlaki = "0.8"
 tray-icon = "0.19"
+wasapi = "=0.15.0"
 
 [build-dependencies]
 slint-build = "1.18"
 winresource = "0.1"
+
+# Debug builds (Build-Start.bat): optimise the dependencies (decoders, UI) so playback of
+# high-resolution files keeps up; our own code stays quick to compile.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
 
 [profile.release]
 lto = true

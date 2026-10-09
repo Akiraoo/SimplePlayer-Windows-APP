@@ -11,6 +11,8 @@ mod server;
 mod session;
 mod single;
 mod tray;
+#[cfg(windows)]
+mod wasapi_out;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -59,7 +61,6 @@ struct App {
     ui: slint::Weak<MainWindow>,
     /// The detachable player window.
     pw: slint::Weak<PlayerWindow>,
-    pw_pos: Option<slint::PhysicalPosition>,
     pw_shown: bool,
     /// Bumped on every song switch; stale background loads are dropped.
     load_gen: u64,
@@ -83,6 +84,8 @@ struct App {
     /// Restore the last opened list / highlighted song once they exist (libraries load late).
     pending_view: Option<String>,
     pending_select: Option<String>,
+    /// Output device names as last listed (settings → 音訊輸出).
+    output_names: Vec<String>,
     cfg: Config,
     client: reqwest::blocking::Client,
     local: Vec<Track>,
@@ -160,18 +163,24 @@ impl App {
             self.mirror_player(true);
             let main = ui.window();
             let scale = main.scale_factor();
-            let w = (360.0 * scale) as u32;
-            let h = ((main.size().height as f32) - 80.0 * scale).clamp(520.0 * scale, 760.0 * scale)
-                as u32;
+            // Same place and size as last time; the first time it pops out where the panel was.
+            let (pos, w, h) = match self.cfg.pw_geom {
+                Some([x, y, w, h]) if w > 0 && h > 0 => {
+                    (slint::PhysicalPosition::new(x, y), w as u32, h as u32)
+                }
+                _ => {
+                    let w = (360.0 * scale) as u32;
+                    let h = ((main.size().height as f32) - 80.0 * scale)
+                        .clamp(520.0 * scale, 760.0 * scale) as u32;
+                    let p = main.position();
+                    let pos = slint::PhysicalPosition::new(
+                        p.x + main.size().width as i32 - w as i32 - (20.0 * scale) as i32,
+                        p.y + (52.0 * scale) as i32,
+                    );
+                    (pos, w, h)
+                }
+            };
             pw.window().set_size(slint::PhysicalSize::new(w, h));
-            let pos = self.pw_pos.unwrap_or_else(|| {
-                // Pop out right where the panel was.
-                let p = main.position();
-                slint::PhysicalPosition::new(
-                    p.x + main.size().width as i32 - w as i32 - (20.0 * scale) as i32,
-                    p.y + (52.0 * scale) as i32,
-                )
-            });
             pw.window().set_position(pos);
             let _ = pw.show();
             self.pw_shown = true;
@@ -185,7 +194,8 @@ impl App {
             });
         } else {
             if was_shown {
-                self.pw_pos = Some(pw.window().position());
+                self.remember_pw_geometry();
+                config::save(&self.cfg);
             }
             // Re-attached: activate the main window *before* hiding the player. If the player
             // were hidden while still active, Windows would hand the focus to whatever window
@@ -199,6 +209,20 @@ impl App {
                     bring_to_front(ui.window());
                 }
             });
+        }
+    }
+
+    /// Stores where the detached player is and how big (kept in the config across runs).
+    fn remember_pw_geometry(&mut self) {
+        if !self.pw_shown {
+            return;
+        }
+        if let Some(pw) = self.pw.upgrade() {
+            let p = pw.window().position();
+            let sz = pw.window().size();
+            if sz.width > 0 && sz.height > 0 && !pw.window().is_minimized() {
+                self.cfg.pw_geom = Some([p.x, p.y, sz.width as i32, sz.height as i32]);
+            }
         }
     }
 
@@ -829,6 +853,64 @@ impl App {
         if let Some(t) = self.tray.as_mut() {
             t.set_tooltip(&tip);
         }
+    }
+
+    /* ---------- audio output ---------- */
+
+    /// Fills the device list in the settings (index 0 = system default).
+    fn refresh_output_devices(&mut self) {
+        let names = self.player.output_devices();
+        let mut items: Vec<SharedString> = vec!["系統預設".into()];
+        items.extend(names.iter().map(|n| SharedString::from(n.as_str())));
+        let want = self.cfg.output_device.clone();
+        let index = if want.is_empty() {
+            0
+        } else if let Some(i) = names.iter().position(|n| *n == want) {
+            i + 1
+        } else {
+            // chosen before but not plugged in now: keep showing it
+            items.push(format!("{want}（未連接）").into());
+            items.len() - 1
+        };
+        self.output_names = names;
+        if let Some(ui) = self.ui() {
+            ui.set_output_devices(ModelRc::new(VecModel::from(items)));
+            ui.set_output_index(index as i32);
+            ui.set_exclusive(self.cfg.exclusive);
+            ui.set_buffer_level(self.cfg.buffer_level as i32);
+            ui.set_output_status(self.player.output_status().into());
+        }
+    }
+
+    fn pick_output(&mut self, index: usize) {
+        let name = if index == 0 {
+            None
+        } else if let Some(n) = self.output_names.get(index - 1) {
+            Some(n.clone())
+        } else {
+            return; // the "not connected" entry
+        };
+        let ok = self.player.set_output_device(name.clone());
+        self.cfg.output_device = name.clone().unwrap_or_default();
+        config::save(&self.cfg);
+        self.flash(match (&name, ok) {
+            (None, _) => "音訊輸出：系統預設".to_string(),
+            (Some(n), true) => format!("音訊輸出：{n}"),
+            (Some(n), false) => format!("無法開啟「{n}」，暫時改用系統預設"),
+        });
+        self.refresh_output_devices();
+    }
+
+    fn set_exclusive(&mut self, on: bool) {
+        self.cfg.exclusive = on;
+        config::save(&self.cfg);
+        let msg = match self.player.set_exclusive(on) {
+            Ok(d) if on => format!("WASAPI 獨佔：{d}"),
+            Ok(_) => "已改回共享模式（Windows 混音）".to_string(),
+            Err(e) => e,
+        };
+        self.flash(msg);
+        self.refresh_output_devices();
     }
 
     /// Short message in the status line.
@@ -1790,7 +1872,12 @@ fn main() -> Result<(), slint::PlatformError> {
     let pw = PlayerWindow::new()?;
     let cfg = config::load();
 
-    let player = Player::new(|ev| post(move |app| app.on_player_event(ev)));
+    let player = Player::new(
+        |ev| post(move |app| app.on_player_event(ev)),
+        (!cfg.output_device.is_empty()).then(|| cfg.output_device.clone()),
+        cfg.exclusive,
+    );
+    player.set_buffer_level(cfg.buffer_level as u32);
     player.set_volume(cfg.volume);
     let discord = discord::Discord::new(cfg.discord_client_id.clone());
 
@@ -1810,7 +1897,6 @@ fn main() -> Result<(), slint::PlatformError> {
     let app = App {
         ui: ui.as_weak(),
         pw: pw.as_weak(),
-        pw_pos: None,
         pw_shown: false,
         load_gen: 0,
         switching: false,
@@ -1829,6 +1915,7 @@ fn main() -> Result<(), slint::PlatformError> {
         tray: None,
         pending_view: None,
         pending_select: None,
+        output_names: Vec::new(),
         local: library::load_local_cache(),
         server: None,
         client: server::client(),
@@ -2054,6 +2141,27 @@ fn main() -> Result<(), slint::PlatformError> {
                 slint::CloseRequestResponse::HideWindow
             }
         });
+        ui.on_settings_opened(|| {
+            // deferred: the dialog can be opened from inside other app code
+            post(|a| a.refresh_output_devices());
+        });
+        ui.on_buffer_picked(|level| {
+            with_app(|a| {
+                let level = level.clamp(0, 2) as u8;
+                a.cfg.buffer_level = level;
+                config::save(&a.cfg);
+                a.player.set_buffer_level(level as u32);
+                if let Some(ui) = a.ui() {
+                    ui.set_buffer_level(level as i32);
+                }
+            });
+        });
+        ui.on_exclusive_toggled(|on| {
+            with_app(|a| a.set_exclusive(on));
+        });
+        ui.on_output_picked(|i| {
+            with_app(|a| a.pick_output(i.max(0) as usize));
+        });
         ui.on_close_to_tray_toggled(|on| {
             with_app(|a| {
                 a.cfg.close_to_tray = on;
@@ -2159,6 +2267,12 @@ fn main() -> Result<(), slint::PlatformError> {
     slow.start(slint::TimerMode::Repeated, Duration::from_secs(1), || {
         with_app(|a| {
             a.refresh_discord_status();
+            // live output format while the settings are open (it follows each song)
+            if let Some(ui) = a.ui() {
+                if ui.get_show_settings() {
+                    ui.set_output_status(a.player.output_status().into());
+                }
+            }
             // Keep the maximize/restore icon right after Win+Up, snapping, etc.
             if let Some(ui) = a.ui() {
                 let max = ui.window().is_maximized();
@@ -2228,6 +2342,7 @@ fn main() -> Result<(), slint::PlatformError> {
     with_app(|a| {
         a.discord.set_activity(None);
         a.save_session();
+        a.remember_pw_geometry();
         config::save(&a.cfg);
         a.tray = None; // removes the tray icon now (the app state is leaked below)
     });
