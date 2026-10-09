@@ -21,6 +21,8 @@ pub struct Config {
     pub detached: bool,
     pub pin_main: bool,
     pub pin_player: bool,
+    /// Theme (accent) colour, "#rrggbb".
+    pub accent: String,
 }
 
 impl Default for Config {
@@ -37,6 +39,7 @@ impl Default for Config {
             detached: false,
             pin_main: false,
             pin_player: false,
+            accent: "#f2a65a".into(),
         }
     }
 }

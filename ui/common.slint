@@ -24,12 +24,18 @@ export global Palette {
     out property <color> strong: light ? #111213 : #f7f7f8;
     out property <color> muted: light ? #64666b : #8d9095;
     out property <color> faint: light ? #9a9ca1 : #5d6065;
-    // accent (amber)
-    out property <color> accent: light ? #cf6f26 : #f2a65a;
-    out property <color> accent-hover: light ? #b85f1c : #ffb872;
-    out property <color> accent-text: light ? #ffffff : #1b1206;
-    out property <color> accent-soft: light ? #cf6f261c : #f2a65a1c;
-    out property <color> accent-line: light ? #cf6f2666 : #f2a65a55;
+    // accent: the user's theme colour (settings). Rust fills in a readable variant per theme
+    // and the text colour that goes on top of it; everything else is derived here.
+    in-out property <color> accent-base: #f2a65a;
+    in-out property <color> accent-on-dark: #f2a65a;
+    in-out property <color> accent-on-light: #cf6f26;
+    in-out property <color> accent-text-dark: #1b1206;
+    in-out property <color> accent-text-light: #ffffff;
+    out property <color> accent: light ? accent-on-light : accent-on-dark;
+    out property <color> accent-hover: light ? accent-on-light.darker(0.12) : accent-on-dark.brighter(0.12);
+    out property <color> accent-text: light ? accent-text-light : accent-text-dark;
+    out property <color> accent-soft: accent.transparentize(0.89);
+    out property <color> accent-line: accent.transparentize(0.62);
     // cover placeholder: black/white gradient
     out property <color> art-a: light ? #fbfbfc : #2c2e31;
     out property <color> art-b: light ? #d3d4d8 : #111213;

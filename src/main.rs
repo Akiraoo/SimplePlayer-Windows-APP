@@ -163,8 +163,18 @@ impl App {
             if was_shown {
                 self.pw_pos = Some(pw.window().position());
             }
+            // Re-attached: activate the main window *before* hiding the player. If the player
+            // were hidden while still active, Windows would hand the focus to whatever window
+            // lies behind it (the main window flashes, then drops back).
+            bring_to_front(ui.window());
             let _ = pw.hide();
             self.pw_shown = false;
+            let weak = ui.as_weak();
+            slint::Timer::single_shot(Duration::from_millis(80), move || {
+                if let Some(ui) = weak.upgrade() {
+                    bring_to_front(ui.window());
+                }
+            });
         }
     }
 
@@ -1099,6 +1109,94 @@ fn window_hwnd(win: &slint::Window) -> Option<*mut std::ffi::c_void> {
     }
 }
 
+/// Parses "#rrggbb" / "rrggbb" / "#rgb".
+fn parse_hex(s: &str) -> Option<(u8, u8, u8)> {
+    let h = s.trim().trim_start_matches('#');
+    let h: String = match h.len() {
+        3 => h.chars().flat_map(|c| [c, c]).collect(),
+        6 => h.to_string(),
+        _ => return None,
+    };
+    let v = u32::from_str_radix(&h, 16).ok()?;
+    Some(((v >> 16) as u8, (v >> 8) as u8, v as u8))
+}
+
+/// Relative luminance (sRGB), 0..1.
+fn luminance((r, g, b): (u8, u8, u8)) -> f32 {
+    let lin = |c: u8| {
+        let c = c as f32 / 255.0;
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+}
+
+/// Applies the theme colour to a window's palette: a variant readable on the dark and on
+/// the light background, plus a text colour that stays legible on top of it.
+fn apply_accent(p: &Palette, hex: &str) {
+    let Some(base) = parse_hex(hex) else { return };
+    let scale = |(r, g, b): (u8, u8, u8), f: f32| {
+        let m = |c: u8| (c as f32 * f).round().clamp(0.0, 255.0) as u8;
+        (m(r), m(g), m(b))
+    };
+    let mix_white = |(r, g, b): (u8, u8, u8), t: f32| {
+        let m = |c: u8| (c as f32 + (255.0 - c as f32) * t).round() as u8;
+        (m(r), m(g), m(b))
+    };
+    // dark theme: lift very dark picks so they still show up
+    let mut on_dark = base;
+    for _ in 0..12 {
+        if luminance(on_dark) >= 0.16 {
+            break;
+        }
+        on_dark = mix_white(on_dark, 0.12);
+    }
+    // light theme: deepen bright picks (yellow, mint…) so they read on near-white
+    let mut on_light = base;
+    for _ in 0..16 {
+        if luminance(on_light) <= 0.30 {
+            break;
+        }
+        on_light = scale(on_light, 0.92);
+    }
+    let text = |c: (u8, u8, u8)| {
+        if luminance(c) > 0.40 {
+            slint::Color::from_rgb_u8(0x1a, 0x16, 0x10)
+        } else {
+            slint::Color::from_rgb_u8(0xff, 0xff, 0xff)
+        }
+    };
+    let col = |(r, g, b): (u8, u8, u8)| slint::Color::from_rgb_u8(r, g, b);
+    p.set_accent_base(col(base));
+    p.set_accent_on_dark(col(on_dark));
+    p.set_accent_on_light(col(on_light));
+    p.set_accent_text_dark(text(on_dark));
+    p.set_accent_text_light(text(on_light));
+}
+
+/// Restores (if minimized) and activates a window.
+fn bring_to_front(win: &slint::Window) {
+    use slint::winit_030::WinitWindowAccessor;
+    win.set_minimized(false);
+    win.with_winit_window(|w| w.focus_window());
+    #[cfg(windows)]
+    if let Some(hwnd) = window_hwnd(win) {
+        #[link(name = "user32")]
+        extern "system" {
+            fn SetForegroundWindow(hwnd: *mut std::ffi::c_void) -> i32;
+            fn BringWindowToTop(hwnd: *mut std::ffi::c_void) -> i32;
+        }
+        // Allowed here: the click that triggered this came from our own (foreground) window.
+        unsafe {
+            BringWindowToTop(hwnd);
+            SetForegroundWindow(hwnd);
+        }
+    }
+}
+
 /// Starts a system move of a frameless window (call while the mouse button is down).
 fn drag_window(win: &slint::Window) {
     use slint::winit_030::WinitWindowAccessor;
@@ -1218,7 +1316,11 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_discord_enabled(cfg.discord);
     ui.global::<Palette>().set_light(cfg.light);
     pw.global::<Palette>().set_light(cfg.light);
+    ui.set_app_version(env!("CARGO_PKG_VERSION").into());
     ui.set_pinned(cfg.pin_main);
+    apply_accent(&ui.global::<Palette>(), &cfg.accent);
+    apply_accent(&pw.global::<Palette>(), &cfg.accent);
+    ui.set_accent_hex(cfg.accent.as_str().into());
     pw.set_pinned(cfg.pin_player);
 
     let app = App {
@@ -1357,6 +1459,27 @@ fn main() -> Result<(), slint::PlatformError> {
             config::save(&a.cfg);
             if let Some(pw) = a.pw.upgrade() {
                 pw.global::<Palette>().set_light(light);
+            }
+        });
+    });
+    ui.on_accent_picked(|hex| {
+        with_app(|a| {
+            let Some((r, g, b)) = parse_hex(&hex) else {
+                // invalid input: show the current colour again
+                if let Some(ui) = a.ui() {
+                    ui.set_accent_hex(a.cfg.accent.as_str().into());
+                }
+                return;
+            };
+            let hex = format!("#{r:02x}{g:02x}{b:02x}");
+            a.cfg.accent = hex.clone();
+            config::save(&a.cfg);
+            if let Some(ui) = a.ui() {
+                apply_accent(&ui.global::<Palette>(), &hex);
+                ui.set_accent_hex(hex.as_str().into());
+            }
+            if let Some(pw) = a.pw.upgrade() {
+                apply_accent(&pw.global::<Palette>(), &hex);
             }
         });
     });

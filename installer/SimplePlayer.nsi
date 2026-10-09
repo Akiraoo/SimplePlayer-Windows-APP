@@ -1,7 +1,7 @@
 ﻿; Simple Player for Windows — NSIS installer
 ;
 ; Build (from the repo root, after Build-Release.bat):
-;   makensis /DVERSION=0.1.0 installer\SimplePlayer.nsi
+;   makensis installer\SimplePlayer.nsi      (version comes from Cargo.toml)
 ; Output: dist\SimplePlayer-Setup-<version>.exe
 ;
 ; The program goes to Program Files; settings and caches stay in the user's AppData
@@ -10,8 +10,10 @@
 Unicode true
 SetCompressor /SOLID lzma
 
+; Version: read from Cargo.toml ([package] version is the first `version = "..."` line).
+; Build-Release.bat passes /DVERSION too; either way there is nothing to edit here.
 !ifndef VERSION
-  !define VERSION "0.1.0"
+  !searchparse /file "..\Cargo.toml" 'version = "' VERSION '"'
 !endif
 !define APPNAME   "Simple Player"
 !define EXENAME   "SimplePlayer.exe"
@@ -60,7 +62,7 @@ VIAddVersionKey /LANG=0 "LegalCopyright" "Apache-2.0"
 !insertmacro MUI_LANGUAGE "TradChinese"
 !insertmacro MUI_LANGUAGE "English"
 
-LangString SecMain       ${LANG_TRADCHINESE} "Simple Player本體（必要）"
+LangString SecMain       ${LANG_TRADCHINESE} "Simple Player（必要）"
 LangString SecMain       ${LANG_ENGLISH}     "Simple Player (required)"
 LangString SecDesktop    ${LANG_TRADCHINESE} "桌面捷徑"
 LangString SecDesktop    ${LANG_ENGLISH}     "Desktop shortcut"

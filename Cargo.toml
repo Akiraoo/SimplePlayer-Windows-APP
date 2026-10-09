@@ -1,6 +1,6 @@
 [package]
 name = "simpleplayer-windows"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "Simple Player for Windows: local library + Simple Player Web Server, with Discord Rich Presence"

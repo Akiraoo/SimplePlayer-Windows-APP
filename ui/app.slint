@@ -99,6 +99,10 @@ export component MainWindow inherits Window {
     callback rescan();
     callback discord-toggled(bool);
     callback theme-toggled(bool);
+    // theme colour: "#rrggbb" from a swatch or the custom field
+    callback accent-picked(string);
+    in property <string> app-version: "0.0.0";
+    in-out property <string> accent-hex: "#f2a65a";
 
     // custom title bar / frameless window
     in property <bool> is-max: false;
@@ -566,7 +570,7 @@ export component MainWindow inherits Window {
         TouchArea { clicked => { root.show-settings = false; } }
         Rectangle {
             width: 600px;
-            height: min(parent.height - 40px, 640px);
+            height: min(parent.height - 40px, 740px);
             border-radius: 18px;
             background: Palette.surface;
             border-width: 1px;
@@ -581,6 +585,63 @@ export component MainWindow inherits Window {
                     Text { text: "設定"; font-size: 20px; font-weight: 700; color: Palette.strong; vertical-alignment: TextVerticalAlignment.center; }
                     Rectangle { horizontal-stretch: 1; }
                     VerticalLayout { alignment: center; Glyph { icon: "close"; clicked => { root.show-settings = false; } } }
+                }
+
+                // theme colour
+                Rectangle {
+                    border-radius: 12px;
+                    background: Palette.raised;
+                    VerticalLayout {
+                        padding: 14px;
+                        spacing: 10px;
+                        SectionLabel { text: "主題色（只換強調色，深淺色不受影響）"; }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            for sw in [
+                                { c: #f2a65a, hex: "#f2a65a" },
+                                { c: #ff7a6b, hex: "#ff7a6b" },
+                                { c: #f472b6, hex: "#f472b6" },
+                                { c: #a78bfa, hex: "#a78bfa" },
+                                { c: #60a5fa, hex: "#60a5fa" },
+                                { c: #2dd4bf, hex: "#2dd4bf" },
+                                { c: #4ade80, hex: "#4ade80" },
+                                { c: #facc15, hex: "#facc15" },
+                            ]: VerticalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    width: 26px;
+                                    height: 26px;
+                                    border-radius: 13px;
+                                    background: sw.c;
+                                    border-width: Palette.accent-base == sw.c ? 3px : (swta.has-hover ? 2px : 0px);
+                                    border-color: Palette.light ? #ffffff : #17181a;
+                                    Rectangle {
+                                        visible: Palette.accent-base == sw.c;
+                                        width: parent.width + 4px;
+                                        height: parent.height + 4px;
+                                        border-radius: self.width / 2;
+                                        border-width: 2px;
+                                        border-color: sw.c;
+                                    }
+                                    swta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.accent-hex = sw.hex;
+                                            root.accent-picked(sw.hex);
+                                        }
+                                    }
+                                }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                            Field {
+                                width: 110px;
+                                text <=> root.accent-hex;
+                                placeholder: "#rrggbb";
+                                accepted(t) => { root.accent-picked(t); }
+                            }
+                            VerticalLayout { alignment: center; Pill { label: "套用"; clicked => { root.accent-picked(root.accent-hex); } } }
+                        }
+                    }
                 }
 
                 // server
@@ -622,7 +683,7 @@ export component MainWindow inherits Window {
                             SectionLabel { text: "本地音樂資料夾（子資料夾會成為歌單）"; vertical-alignment: TextVerticalAlignment.center; }
                         }
                         Rectangle {
-                            height: 120px;
+                            height: 100px;
                             border-radius: 9px;
                             background: Palette.bg;
                             ListView {
@@ -735,7 +796,7 @@ export component MainWindow inherits Window {
                     Image { width: 64px; height: 64px; source: @image-url("../assets/icon.png"); }
                 }
                 Text { text: "Simple Player for Windows"; font-size: 17px; font-weight: 700; color: Palette.strong; horizontal-alignment: TextHorizontalAlignment.center; }
-                Text { text: "v0.1.0  ·  Apache License 2.0"; color: Palette.accent; font-size: 11px; font-weight: 600; horizontal-alignment: TextHorizontalAlignment.center; }
+                Text { text: "v" + root.app-version + "  ·  Apache License 2.0"; color: Palette.accent; font-size: 11px; font-weight: 600; horizontal-alignment: TextHorizontalAlignment.center; }
                 Text { text: "本地音樂與 Simple Player Web Server，內建 Discord 狀態。"; color: Palette.muted; font-size: 11px; horizontal-alignment: TextHorizontalAlignment.center; wrap: TextWrap.word-wrap; }
                 AboutSlint { height: 150px; }
                 HorizontalLayout {
