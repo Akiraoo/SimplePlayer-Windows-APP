@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use crate::resample::Resampler;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::{Decoder, DecoderOptions, CODEC_TYPE_NULL};
@@ -238,7 +239,7 @@ impl Player {
         }
         let r = rx
             .recv_timeout(Duration::from_secs(8))
-            .unwrap_or_else(|_| Err("逾時".into()));
+            .unwrap_or_else(|_| Err(crate::tr!("逾時", "Timed out")));
         if self.is_active() {
             self.seek(pos);
         }
@@ -267,15 +268,32 @@ impl Player {
         let buffered = sh
             .queue
             .try_lock()
-            .map(|q| format!(" · 緩衝 {:.2} 秒", q.len() as f64 / 2.0 / rate))
+            .map(|q| {
+                let secs = format!("{:.2}", q.len() as f64 / 2.0 / rate);
+                crate::tr!(" · 緩衝 {} 秒", " · buffer {} s", secs)
+            })
             .unwrap_or_default();
-        let desc = sh.desc.lock().map(|d| d.clone()).unwrap_or_default();
-        let mut s = format!(
-            "{desc}{buffered} · 斷音 {} 次",
+        let detail = sh.desc.lock().map(|d| d.clone()).unwrap_or_default();
+        let excl = sh.exclusive.load(Ordering::Relaxed);
+        let desc = if detail.is_empty() {
+            crate::tr!("沒有輸出", "No output")
+        } else if excl {
+            crate::tr!("獨佔 · {}", "Exclusive · {}", detail)
+        } else {
+            crate::tr!("共享 · {}", "Shared · {}", detail)
+        };
+        let mut s = desc + &buffered;
+        s.push_str(&crate::tr!(
+            " · 斷音 {} 次",
+            " · dropouts {}",
             sh.underruns.load(Ordering::Relaxed)
-        );
-        if sh.exclusive.load(Ordering::Relaxed) {
-            s.push_str(&format!(" · 延遲 {} 次", sh.late.load(Ordering::Relaxed)));
+        ));
+        if excl {
+            s.push_str(&crate::tr!(
+                " · 延遲 {} 次",
+                " · late {}",
+                sh.late.load(Ordering::Relaxed)
+            ));
         }
         s
     }
@@ -414,7 +432,7 @@ impl Output {
             );
             match res {
                 Ok(x) => {
-                    self.publish(format!("獨佔 · {}", x.describe()));
+                    self.publish(x.describe());
                     self.shared.out_rate.store(x.rate, Ordering::Relaxed);
                     self.shared.exclusive.store(true, Ordering::Relaxed);
                     self.shared.excl_ack.store(want_rate, Ordering::Relaxed);
@@ -424,7 +442,7 @@ impl Output {
                 }
                 Err(e) => {
                     eprintln!("output: exclusive failed: {e}");
-                    excl_err = Some(format!("無法使用獨佔模式：{e}"));
+                    excl_err = Some(crate::tr!("無法使用獨佔模式：{}", "Exclusive mode unavailable: {}", e));
                     self.shared.excl_ack.store(want_rate, Ordering::Relaxed);
                 }
             }
@@ -437,16 +455,16 @@ impl Output {
         self.stream = exact.or_else(|| open_output(self.shared.clone(), None, self.failed.clone()));
         self.publish(if self.stream.is_some() {
             format!(
-                "共享 · {} kHz",
+                "{} kHz",
                 self.shared.out_rate.load(Ordering::Relaxed) as f64 / 1000.0
             )
         } else {
-            "沒有輸出".into()
+            String::new()
         });
         match (excl_err, self.stream.is_some()) {
             (Some(e), _) => Err(e),
-            (None, true) => Ok("共享".into()),
-            (None, false) => Err("找不到音訊輸出裝置".into()),
+            (None, true) => Ok(crate::tr!("共享", "Shared")),
+            (None, false) => Err(crate::tr!("找不到音訊輸出裝置", "No audio output device found")),
         }
     }
 
@@ -669,18 +687,18 @@ fn open_track(
             },
             &MetadataOptions::default(),
         )
-        .map_err(|e| format!("無法辨識音訊格式：{e}"))?;
+        .map_err(|e| crate::tr!("無法辨識音訊格式：{}", "Unrecognised audio format: {}", e))?;
     let format = probed.format;
     let track = format
         .tracks()
         .iter()
         .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-        .ok_or_else(|| "找不到音軌".to_string())?;
+        .ok_or_else(|| crate::tr!("找不到音軌", "No audio track found"))?;
     let track_id = track.id;
     let params = track.codec_params.clone();
     let decoder = symphonia::default::get_codecs()
         .make(&params, &DecoderOptions::default())
-        .map_err(|e| format!("不支援的編碼：{e}"))?;
+        .map_err(|e| crate::tr!("不支援的編碼：{}", "Unsupported codec: {}", e))?;
     let src_rate = params.sample_rate.unwrap_or(44_100);
     let duration = match (params.n_frames, params.time_base) {
         (Some(n), Some(tb)) => {
@@ -933,59 +951,3 @@ fn to_stereo(samples: &[f32], channels: usize) -> Vec<f32> {
     }
 }
 
-/// Linear-interpolation resampler for interleaved stereo.
-struct Resampler {
-    step: f64, // source frames per output frame
-    pos: f64,  // position in the (prev + current) source stream
-    prev: [f32; 2],
-}
-
-impl Resampler {
-    fn new(src: u32, dst: u32) -> Self {
-        Resampler {
-            step: src as f64 / dst.max(1) as f64,
-            pos: 0.0,
-            prev: [0.0, 0.0],
-        }
-    }
-
-    fn reset(&mut self) {
-        self.pos = 0.0;
-        self.prev = [0.0, 0.0];
-    }
-
-    fn process(&mut self, input: &[f32]) -> Vec<f32> {
-        if (self.step - 1.0).abs() < 1e-9 {
-            return input.to_vec();
-        }
-        let frames = input.len() / 2;
-        if frames == 0 {
-            return Vec::new();
-        }
-        let prev = self.prev;
-        let frame = |i: isize| -> [f32; 2] {
-            if i < 0 {
-                prev
-            } else {
-                let i = i as usize;
-                [input[i * 2], input[i * 2 + 1]]
-            }
-        };
-        let mut out = Vec::with_capacity((frames as f64 / self.step) as usize * 2 + 4);
-        // pos is measured from the previous block's last frame (index -1).
-        let mut pos = self.pos;
-        while pos < frames as f64 {
-            let i = pos.floor() as isize - 1;
-            let t = (pos - pos.floor()) as f32;
-            let a = frame(i);
-            let b = frame(i + 1);
-            out.push(a[0] + (b[0] - a[0]) * t);
-            out.push(a[1] + (b[1] - a[1]) * t);
-            pos += self.step;
-        }
-        self.pos = pos;
-        self.pos -= frames as f64;
-        self.prev = [input[(frames - 1) * 2], input[(frames - 1) * 2 + 1]];
-        out
-    }
-}

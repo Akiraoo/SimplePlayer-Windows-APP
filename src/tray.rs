@@ -24,16 +24,29 @@ mod imp {
         next: MenuId,
         quit: MenuId,
         tooltip: String,
+        /// show, play, prev, next, quit (kept to relabel them when the language changes)
+        items: Vec<MenuItem>,
+    }
+
+    fn labels() -> [String; 5] {
+        [
+            crate::tr!("顯示 Simple Player", "Show Simple Player"),
+            crate::tr!("播放 / 暫停", "Play / Pause"),
+            crate::tr!("上一首", "Previous"),
+            crate::tr!("下一首", "Next"),
+            crate::tr!("結束", "Quit"),
+        ]
     }
 
     impl Tray {
         pub fn new() -> Option<Tray> {
             let menu = Menu::new();
-            let show = MenuItem::new("顯示 Simple Player", true, None);
-            let play = MenuItem::new("播放 / 暫停", true, None);
-            let prev = MenuItem::new("上一首", true, None);
-            let next = MenuItem::new("下一首", true, None);
-            let quit = MenuItem::new("結束", true, None);
+            let [l_show, l_play, l_prev, l_next, l_quit] = labels();
+            let show = MenuItem::new(l_show, true, None);
+            let play = MenuItem::new(l_play, true, None);
+            let prev = MenuItem::new(l_prev, true, None);
+            let next = MenuItem::new(l_next, true, None);
+            let quit = MenuItem::new(l_quit, true, None);
             menu.append_items(&[
                 &show,
                 &PredefinedMenuItem::separator(),
@@ -68,6 +81,7 @@ mod imp {
                 next: next.id().clone(),
                 quit: quit.id().clone(),
                 tooltip: String::new(),
+                items: vec![show, play, prev, next, quit],
             })
         }
 
@@ -107,6 +121,13 @@ mod imp {
                 let _ = self.icon.set_tooltip(Some(text));
             }
         }
+
+        /// Re-reads the menu texts (after a language change).
+        pub fn relabel(&self) {
+            for (item, label) in self.items.iter().zip(labels()) {
+                item.set_text(label);
+            }
+        }
     }
 }
 
@@ -122,6 +143,7 @@ mod imp {
             Vec::new()
         }
         pub fn set_tooltip(&mut self, _: &str) {}
+        pub fn relabel(&self) {}
     }
 }
 

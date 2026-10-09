@@ -124,7 +124,7 @@ fn run(rx: Receiver<Cmd>, status: Arc<Mutex<Status>>, client_id: String) {
             dirty = false;
         } else {
             conn = None;
-            set_status(false, String::new(), "Discord 連線中斷，稍後重試".into());
+            set_status(false, String::new(), crate::tr!("Discord 連線中斷，稍後重試", "Lost the Discord connection, retrying later"));
         }
     }
 }
@@ -153,7 +153,7 @@ fn connect(client_id: &str) -> Result<(Box<dyn Pipe>, String), String> {
             break;
         }
     }
-    let mut p = pipe.ok_or("找不到 Discord App（請確認 Discord 已開啟）")?;
+    let mut p = pipe.ok_or_else(|| crate::tr!("找不到 Discord App（請確認 Discord 已開啟）", "Discord app not found (is Discord running?)"))?;
     write_frame(
         p.as_mut(),
         OP_HANDSHAKE,
@@ -162,7 +162,7 @@ fn connect(client_id: &str) -> Result<(Box<dyn Pipe>, String), String> {
     .map_err(|e| e.to_string())?;
     let (op, data) = read_frame(p.as_mut()).map_err(|e| e.to_string())?;
     if op == OP_CLOSE {
-        return Err(format!("Discord 拒絕連線：{}", data["message"]));
+        return Err(crate::tr!("Discord 拒絕連線：{}", "Discord refused the connection: {}", data["message"]));
     }
     let user = data["data"]["user"]["global_name"]
         .as_str()
@@ -274,7 +274,7 @@ pub fn activity(np: &NowPlaying) -> Value {
             json!({ "large_image": np.cover_url, "large_text": clip(np.album, "Simple Player") });
     }
     if !np.share_url.is_empty() {
-        a["buttons"] = json!([{ "label": "在 Simple Player 收聽", "url": np.share_url }]);
+        a["buttons"] = json!([{ "label": crate::tr!("在 Simple Player 收聽", "Listen on Simple Player"), "url": np.share_url }]);
     }
     a
 }

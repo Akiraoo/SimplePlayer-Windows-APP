@@ -145,7 +145,7 @@ impl Exclusive {
                 rates.push(r);
             }
         }
-        let mut last_err = String::from("不支援的格式");
+        let mut last_err = crate::tr!("不支援的格式", "Unsupported format");
         let mut refusal: Option<String> = None;
         for &r in &rates {
             for &k in &kinds {
@@ -261,16 +261,17 @@ impl Exclusive {
             s.push_str(" + dither");
         }
         if self.rate != self.asked_rate || !bits_ok {
-            s.push_str(&format!(
+            s.push_str(&crate::tr!(
                 "（歌曲是 {} kHz · {}-bit，裝置不接受",
+                " (song is {} kHz · {}-bit, the device refused it",
                 khz(self.asked_rate),
                 self.asked_bits
             ));
             if let Some(e) = &self.refusal {
                 let e: String = e.chars().take(80).collect();
-                s.push_str(&format!("：{e}"));
+                s.push_str(&crate::tr!("：{}", ": {}", e));
             }
-            s.push('）');
+            s.push_str(&crate::tr!("）", ")"));
         }
         s
     }

@@ -2,7 +2,7 @@
 
 Simple Player 的 Windows 客戶端：本地音樂和 [Simple Player Web Server](https://github.com/Akiraoo/SimplePlayer-Web-Server) 的曲庫放在同一個播放器裡，內建 Discord 狀態顯示。用 Rust + [Slint](https://slint.dev) 寫成，不使用瀏覽器核心，記憶體占用低。
 
-> 開發中（v0.4.1，pre-release）。
+> 目前版本：v1.0.0。介面支援繁體中文與 English。
 
 ## 功能
 
@@ -19,6 +19,9 @@ Simple Player 的 Windows 客戶端：本地音樂和 [Simple Player Web Server]
 * **系統列**：按 ✕ 會縮到系統列繼續播放（可在設定關閉），系統列圖示的選單可以播放／暫停、切歌、結束
 * **音訊輸出**：在設定選擇輸出裝置（拔掉時自動改用系統預設）；可開啟 **WASAPI 獨佔模式**，依歌曲本身的取樣率和位元深度直接輸出給裝置（bit-perfect，期間其他程式無法使用該裝置發聲）。裝置不支援歌曲格式時會自動改用最接近的格式；只支援 16-bit 的裝置在降低位元深度時會加上 dither
 * **緩衝大小**：標準／大／超大，網路不穩或電腦忙碌時可以調大；串流會在背景預先下載
+* **高品質取樣率轉換**：共享模式下歌曲和裝置取樣率不同時（例如 44.1 kHz 的歌、48 kHz 的裝置），使用 windowed-sinc 轉換，不會有高頻失真
+* **語言**：繁體中文／English，在設定中隨時切換
+* **自動檢查更新**：啟動時到 GitHub 檢查新版本（可在設定關閉），「關於」也可以手動檢查
 * **Windows 系統媒體控制**：音量浮窗、鎖定畫面、鍵盤媒體鍵
 * **Discord 狀態**：直接推到本機的 Discord App，不用登入。操作（播放、暫停、跳轉、切歌）會立刻同步，平時由 Discord 自己跑進度條；暫停時顯示 ⏸ 並停住進度條。伺服器的歌會顯示封面（需要伺服器有公開的 https 網址）
 
@@ -50,6 +53,8 @@ Build-Release.bat            # 產生 target\release\SimplePlayer.exe；有安�
 ## 設定
 
 第一次開啟時按標題欄的 ⚙：
+
+* **一般**：介面語言、啟動時自動檢查更新
 
 * **Simple Player 伺服器**：填 Mobile API 位址，例如 `http://192.168.0.10:55555`，或反向代理後的 `https://music.example.com`
 * **本地音樂資料夾**：可以加入多個

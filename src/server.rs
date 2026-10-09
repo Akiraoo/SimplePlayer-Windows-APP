@@ -93,14 +93,14 @@ pub fn fetch(client: &Client, base: &str) -> Result<ServerData, String> {
         let r = client
             .get(format!("{base}{path}"))
             .send()
-            .map_err(|e| format!("連線失敗：{e}"))?;
+            .map_err(|e| crate::tr!("連線失敗：{}", "Connection failed: {}", e))?;
         if !r.status().is_success() {
-            return Err(format!("伺服器回應 HTTP {}", r.status()));
+            return Err(crate::tr!("伺服器回應 HTTP {}", "Server replied HTTP {}", r.status()));
         }
         r.text().map_err(|e| e.to_string())
     };
     let lib: LibraryResp =
-        serde_json::from_str(&get("/api/library")?).map_err(|e| format!("曲庫格式錯誤：{e}"))?;
+        serde_json::from_str(&get("/api/library")?).map_err(|e| crate::tr!("曲庫格式錯誤：{}", "Bad library data: {}", e))?;
     let playlists: BTreeMap<String, Vec<String>> =
         serde_json::from_str(&get("/api/playlists")?).unwrap_or_default();
     let cfg: ConfigResp = get("/api/config")
@@ -164,19 +164,20 @@ pub fn rescan(client: &Client, base: &str) -> Result<String, String> {
         // a big library can take a while on the first scan after many changes
         .timeout(Duration::from_secs(600))
         .send()
-        .map_err(|e| format!("連線失敗：{e}"))?;
+        .map_err(|e| crate::tr!("連線失敗：{}", "Connection failed: {}", e))?;
     if !r.status().is_success() {
-        return Err(format!("伺服器掃描失敗（HTTP {}）", r.status()));
+        return Err(crate::tr!("伺服器掃描失敗（HTTP {}）", "Server scan failed (HTTP {})", r.status()));
     }
     let s: ScanResp = r.json().unwrap_or_default();
     if s.cached {
-        return Ok("伺服器剛掃描過".into());
+        return Ok(crate::tr!("伺服器剛掃描過", "The server scanned just now"));
     }
     Ok(if s.added + s.changed + s.removed == 0 {
-        format!("伺服器掃描完成，沒有變更（{} 首）", s.tracks)
+        crate::tr!("伺服器掃描完成，沒有變更（{} 首）", "Server scan done, nothing changed ({} songs)", s.tracks)
     } else {
-        format!(
+        crate::tr!(
             "伺服器掃描完成：新增 {}、變更 {}、移除 {}",
+            "Server scan done: {} added, {} changed, {} removed",
             s.added, s.changed, s.removed
         )
     })

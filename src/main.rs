@@ -1,16 +1,19 @@
 // Simple Player for Windows: local library + Simple Player Web Server, Discord Rich Presence.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod i18n;
 mod config;
 mod discord;
 mod httpsrc;
 mod library;
 mod media;
 mod player;
+mod resample;
 mod server;
 mod session;
 mod single;
 mod tray;
+mod update;
 #[cfg(windows)]
 mod wasapi_out;
 
@@ -86,6 +89,8 @@ struct App {
     pending_select: Option<String>,
     /// Output device names as last listed (settings → 音訊輸出).
     output_names: Vec<String>,
+    /// A newer release found on GitHub: (version, release page), shown in About.
+    update_ver: Option<(String, String)>,
     cfg: Config,
     client: reqwest::blocking::Client,
     local: Vec<Track>,
@@ -276,9 +281,9 @@ impl App {
         };
 
         {
-            header(&mut items, &mut views, "正在播放");
+            header(&mut items, &mut views, &crate::tr!("正在播放", "NOW PLAYING"));
             items.push(SourceItem {
-                label: "播放佇列".into(),
+                label: crate::tr!("播放佇列", "Play queue").into(),
                 count: self.upnext.len().to_string().into(),
                 icon: "list".into(),
                 header: false,
@@ -286,9 +291,9 @@ impl App {
             views.push(Some(View::Queue));
         }
         if !self.cfg.local_folders.is_empty() || !self.local.is_empty() {
-            header(&mut items, &mut views, "本地音樂");
+            header(&mut items, &mut views, &crate::tr!("本地音樂", "LOCAL MUSIC"));
             items.push(SourceItem {
-                label: "全部本地歌曲".into(),
+                label: crate::tr!("全部本地歌曲", "All local songs").into(),
                 count: self.local.len().to_string().into(),
                 icon: "disk".into(),
                 header: false,
@@ -311,9 +316,9 @@ impl App {
             }
         }
         if let Some(s) = &self.server {
-            header(&mut items, &mut views, "SIMPLE PLAYER 伺服器");
+            header(&mut items, &mut views, &crate::tr!("SIMPLE PLAYER 伺服器", "SIMPLE PLAYER SERVER"));
             items.push(SourceItem {
-                label: "全部歌曲".into(),
+                label: crate::tr!("全部歌曲", "All songs").into(),
                 count: s.tracks.len().to_string().into(),
                 icon: "cloud".into(),
                 header: false,
@@ -330,9 +335,9 @@ impl App {
             }
         }
         if views.iter().all(|v| v.is_none()) {
-            header(&mut items, &mut views, "開始使用");
+            header(&mut items, &mut views, &crate::tr!("開始使用", "GET STARTED"));
             items.push(SourceItem {
-                label: "開啟設定…".into(),
+                label: crate::tr!("開啟設定…", "Open settings…").into(),
                 count: SharedString::new(),
                 icon: "settings".into(),
                 header: false,
@@ -479,16 +484,16 @@ impl App {
         }
         self.visible = rows;
         let title = match &self.view {
-            View::Local => "全部本地歌曲".to_string(),
-            View::Server => "全部歌曲".to_string(),
+            View::Local => crate::tr!("全部本地歌曲", "All local songs"),
+            View::Server => crate::tr!("全部歌曲", "All songs"),
             View::Playlist(n) | View::LocalFolder(n) => n.clone(),
-            View::Queue => "播放佇列".to_string(),
+            View::Queue => crate::tr!("播放佇列", "Play queue"),
             View::Setup => "Simple Player".to_string(),
         };
         if let Some(ui) = self.ui() {
             ui.set_list_title(title.into());
             ui.set_queue_view(queue_view);
-            ui.set_list_info(format!("{} 首", self.visible.len()).into());
+            ui.set_list_info(crate::tr!("{} 首", "{} songs", self.visible.len()).into());
             ui.set_sort_column(self.sort.map(|s| s.0).unwrap_or(-1));
             ui.set_sort_asc(self.sort.map(|s| s.1).unwrap_or(true));
         }
@@ -703,7 +708,7 @@ impl App {
         let Some(t) = self.visible.get(row).cloned() else {
             return;
         };
-        self.flash(format!("已加入佇列：{}", t.title));
+        self.flash(crate::tr!("已加入佇列：{}", "Added to queue: {}", t.title));
         self.upnext.push(t);
         self.queue_changed();
     }
@@ -860,7 +865,7 @@ impl App {
     /// Fills the device list in the settings (index 0 = system default).
     fn refresh_output_devices(&mut self) {
         let names = self.player.output_devices();
-        let mut items: Vec<SharedString> = vec!["系統預設".into()];
+        let mut items: Vec<SharedString> = vec![crate::tr!("系統預設", "System default").into()];
         items.extend(names.iter().map(|n| SharedString::from(n.as_str())));
         let want = self.cfg.output_device.clone();
         let index = if want.is_empty() {
@@ -869,7 +874,7 @@ impl App {
             i + 1
         } else {
             // chosen before but not plugged in now: keep showing it
-            items.push(format!("{want}（未連接）").into());
+            items.push(crate::tr!("{}（未連接）", "{} (not connected)", want).into());
             items.len() - 1
         };
         self.output_names = names;
@@ -894,9 +899,9 @@ impl App {
         self.cfg.output_device = name.clone().unwrap_or_default();
         config::save(&self.cfg);
         self.flash(match (&name, ok) {
-            (None, _) => "音訊輸出：系統預設".to_string(),
-            (Some(n), true) => format!("音訊輸出：{n}"),
-            (Some(n), false) => format!("無法開啟「{n}」，暫時改用系統預設"),
+            (None, _) => crate::tr!("音訊輸出：系統預設", "Audio output: system default"),
+            (Some(n), true) => crate::tr!("音訊輸出：{}", "Audio output: {}", n),
+            (Some(n), false) => crate::tr!("無法開啟「{}」，暫時改用系統預設", "Couldn't open \"{}\", using the system default for now", n),
         });
         self.refresh_output_devices();
     }
@@ -905,12 +910,103 @@ impl App {
         self.cfg.exclusive = on;
         config::save(&self.cfg);
         let msg = match self.player.set_exclusive(on) {
-            Ok(d) if on => format!("WASAPI 獨佔：{d}"),
-            Ok(_) => "已改回共享模式（Windows 混音）".to_string(),
+            Ok(d) if on => crate::tr!("WASAPI 獨佔：{}", "WASAPI exclusive: {}", d),
+            Ok(_) => crate::tr!("已改回共享模式（Windows 混音）", "Back to shared mode (Windows mixer)"),
             Err(e) => e,
         };
         self.flash(msg);
         self.refresh_output_devices();
+    }
+
+    /* ---------- language & updates ---------- */
+
+    fn set_language(&mut self, en: bool) {
+        self.cfg.lang = if en { "en" } else { "zh-TW" }.to_string();
+        config::save(&self.cfg);
+        i18n::set_english(en);
+        if let Some(ui) = self.ui() {
+            ui.global::<Lang>().set_en(en);
+        }
+        if let Some(pw) = self.pw.upgrade() {
+            pw.global::<Lang>().set_en(en);
+        }
+        // texts made on the Rust side
+        self.status.clear();
+        self.rebuild_sources();
+        self.refresh_list();
+        self.update_status();
+        self.refresh_output_devices();
+        self.refresh_discord_status();
+        self.show_update_found();
+        if let Some(t) = self.tray.as_ref() {
+            t.relabel();
+        }
+        if self.server.is_some() {
+            let n = self.server.as_ref().map(|s| s.tracks.len()).unwrap_or(0);
+            self.set_server_status(crate::tr!("已連線，{} 首歌", "Connected, {} songs", n));
+        }
+    }
+
+    /// Asks GitHub for a newer release in the background. `manual` = the About button:
+    /// then "up to date" and errors are shown too.
+    fn check_update(&mut self, manual: bool) {
+        if let Some(ui) = self.ui() {
+            ui.set_update_checking(true);
+            if manual {
+                ui.set_update_status(crate::tr!("檢查中…", "Checking…").into());
+            }
+        }
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let res = update::check(&client);
+            post(move |app| {
+                let Some(ui) = app.ui() else { return };
+                ui.set_update_checking(false);
+                match res {
+                    Ok(Some(v)) => {
+                        app.update_ver = Some((v.version.clone(), v.url));
+                        app.show_update_found();
+                        if !manual {
+                            app.flash(crate::tr!(
+                                "有新版本 v{}（關於 → 前往下載）",
+                                "Version {} is available (About → Download)",
+                                v.version
+                            ));
+                        }
+                    }
+                    Ok(None) if manual => ui.set_update_status(
+                        crate::tr!(
+                            "已是最新版本（v{}）",
+                            "You're up to date (v{})",
+                            env!("CARGO_PKG_VERSION")
+                        )
+                        .into(),
+                    ),
+                    Err(e) if manual => ui.set_update_status(e.into()),
+                    _ => {}
+                }
+            });
+        });
+    }
+
+    fn show_update_found(&self) {
+        let Some(ui) = self.ui() else { return };
+        match &self.update_ver {
+            Some((v, url)) => {
+                ui.set_update_available(true);
+                ui.set_update_url(url.as_str().into());
+                ui.set_update_status(
+                    crate::tr!(
+                        "有新版本 v{}（目前 v{}）",
+                        "New version {} (you have {})",
+                        v,
+                        env!("CARGO_PKG_VERSION")
+                    )
+                    .into(),
+                );
+            }
+            None => ui.set_update_status(SharedString::new()),
+        }
     }
 
     /// Short message in the status line.
@@ -1038,8 +1134,8 @@ impl App {
                     "{}  ·  {}",
                     t.ext.to_uppercase(),
                     match t.source {
-                        Source::Local => "本地",
-                        Source::Server => "伺服器",
+                        Source::Local => crate::tr!("本地", "LOCAL"),
+                        Source::Server => crate::tr!("伺服器", "SERVER"),
                     }
                 )
                 .into(),
@@ -1087,7 +1183,7 @@ impl App {
                     Box::new(move || {
                         std::fs::File::open(&path)
                             .map(|f| Box::new(f) as Box<dyn symphonia::core::io::MediaSource>)
-                            .map_err(|e| format!("無法開啟檔案：{e}"))
+                            .map_err(|e| crate::tr!("無法開啟檔案：{}", "Can't open the file: {}", e))
                     }),
                     ext,
                     paused,
@@ -1103,7 +1199,7 @@ impl App {
                     Box::new(move || {
                         httpsrc::HttpSource::open(client, url)
                             .map(|h| Box::new(h) as Box<dyn symphonia::core::io::MediaSource>)
-                            .map_err(|e| format!("無法串流：{e}"))
+                            .map_err(|e| crate::tr!("無法串流：{}", "Can't stream: {}", e))
                     }),
                     ext,
                     paused,
@@ -1518,11 +1614,11 @@ impl App {
         let Some(ui) = self.ui() else { return };
         let mut parts = Vec::new();
         if self.scanning {
-            parts.push("掃描本地資料夾中…".to_string());
+            parts.push(crate::tr!("掃描本地資料夾中…", "Scanning local folders…"));
         }
-        parts.push(format!("本地 {} 首", self.local.len()));
+        parts.push(crate::tr!("本地 {} 首", "Local {}", self.local.len()));
         if let Some(s) = &self.server {
-            parts.push(format!("伺服器 {} 首", s.tracks.len()));
+            parts.push(crate::tr!("伺服器 {} 首", "Server {}", s.tracks.len()));
         }
         if !self.status.is_empty() {
             parts.push(self.status.clone());
@@ -1533,22 +1629,23 @@ impl App {
     fn refresh_discord_status(&self) {
         let Some(ui) = self.ui() else { return };
         let text = if !self.cfg.discord {
-            "已關閉".to_string()
+            crate::tr!("已關閉", "Off")
         } else {
             let s = self.discord.status();
             if s.connected {
-                format!(
+                crate::tr!(
                     "已連線{}",
+                    "Connected{}",
                     if s.user.is_empty() {
                         String::new()
                     } else {
-                        format!("（{}）", s.user)
+                        crate::tr!("（{}）", " ({})", s.user)
                     }
                 )
             } else if !s.error.is_empty() {
                 s.error
             } else {
-                "播放時自動連線".to_string()
+                crate::tr!("播放時自動連線", "Connects when playing")
             }
         };
         ui.set_discord_status(text.into());
@@ -1588,16 +1685,16 @@ impl App {
         if base.is_empty() {
             self.server = None;
             self.rebuild_sources();
-            self.set_server_status("未設定".into());
+            self.set_server_status(crate::tr!("未設定", "Not set"));
             return;
         }
         if self.server.as_ref().map(|s| s.base != base).unwrap_or(true) {
             self.server = server::load_cache(&base);
             self.rebuild_sources();
         }
-        self.set_server_status(if rescan { "伺服器掃描中…" } else { "連線中…" }.into());
+        self.set_server_status(if rescan { crate::tr!("伺服器掃描中…", "Server is scanning…") } else { crate::tr!("連線中…", "Connecting…") });
         if rescan {
-            self.flash("伺服器重新掃描中…".into());
+            self.flash(crate::tr!("伺服器重新掃描中…", "Asking the server to rescan…"));
         }
         let client = self.client.clone();
         std::thread::spawn(move || {
@@ -1611,7 +1708,7 @@ impl App {
                         app.server = Some(data);
                         app.rebuild_sources();
                         app.update_status();
-                        app.set_server_status(format!("已連線，{n} 首歌"));
+                        app.set_server_status(crate::tr!("已連線，{} 首歌", "Connected, {} songs", n));
                     }
                     Err(e) => app.set_server_status(e),
                 }
@@ -1889,6 +1986,14 @@ fn main() -> Result<(), slint::PlatformError> {
     let ui = MainWindow::new()?;
     let pw = PlayerWindow::new()?;
     let cfg = config::load();
+    i18n::set_english(match cfg.lang.as_str() {
+        "en" => true,
+        "zh-TW" => false,
+        _ => !i18n::system_is_chinese(),
+    });
+    ui.global::<Lang>().set_en(i18n::english());
+    pw.global::<Lang>().set_en(i18n::english());
+    ui.set_auto_update(cfg.auto_update);
 
     let player = Player::new(
         |ev| post(move |app| app.on_player_event(ev)),
@@ -1934,6 +2039,7 @@ fn main() -> Result<(), slint::PlatformError> {
         pending_view: None,
         pending_select: None,
         output_names: Vec::new(),
+        update_ver: None,
         local: library::load_local_cache(),
         server: None,
         client: server::client(),
@@ -1977,6 +2083,9 @@ fn main() -> Result<(), slint::PlatformError> {
         app.refresh_discord_status();
         // local and server libraries come from their caches at this point
         app.restore_session();
+        if app.cfg.auto_update {
+            app.check_update(false);
+        }
     });
 
     /* ---------- callbacks ---------- */
@@ -2036,7 +2145,7 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.on_add_folder(|| {
         // The folder picker runs its own message loop: keep the app state unborrowed meanwhile.
         let picked = rfd::FileDialog::new()
-            .set_title("選擇音樂資料夾")
+            .set_title(crate::tr!("選擇音樂資料夾", "Choose a music folder"))
             .pick_folder();
         if let Some(dir) = picked {
             with_app(|a| {
@@ -2180,6 +2289,19 @@ fn main() -> Result<(), slint::PlatformError> {
         ui.on_output_picked(|i| {
             with_app(|a| a.pick_output(i.max(0) as usize));
         });
+        ui.on_language_picked(|en| {
+            with_app(|a| a.set_language(en));
+        });
+        ui.on_auto_update_toggled(|on| {
+            with_app(|a| {
+                a.cfg.auto_update = on;
+                config::save(&a.cfg);
+            });
+        });
+        ui.on_check_update(|| {
+            with_app(|a| a.check_update(true));
+        });
+        ui.on_open_url(|url| update::open_url(&url));
         ui.on_close_to_tray_toggled(|on| {
             with_app(|a| {
                 a.cfg.close_to_tray = on;

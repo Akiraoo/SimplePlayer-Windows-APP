@@ -6,9 +6,9 @@ import { ListView, AboutSlint } from "std-widgets.slint";
 import { Icon } from "icons.slint";
 import {
     Palette, LyricLine, Glyph, Pill, Toggle, Slider, SearchBox, Field, Art, PlayingMark, HeaderCell,
-    SectionLabel, WinButton, ResizeBorders, PlayButton, NowPanel, ScrollThumb } from "common.slint";
+    SectionLabel, WinButton, ResizeBorders, PlayButton, NowPanel, ScrollThumb, Lang } from "common.slint";
 
-export { Palette, LyricLine } from "common.slint";
+export { Palette, LyricLine, Lang } from "common.slint";
 
 export struct SourceItem {
     label: string,
@@ -50,7 +50,7 @@ export component MainWindow inherits Window {
     in-out property <int> selected-row: -1;
     in property <int> sort-column: -1;
     in property <bool> sort-asc: true;
-    in property <string> list-title: "全部歌曲";
+    in property <string> list-title: (Lang.en ? "All songs" : "全部歌曲");
     in property <string> list-info;
     in property <bool> empty-library: false;
     callback row-activated(int);
@@ -58,8 +58,8 @@ export component MainWindow inherits Window {
     callback search-changed(string);
 
     // now playing
-    in property <string> now-title: "尚未播放";
-    in property <string> now-artist: "選一首歌開始播放";
+    in property <string> now-title: (Lang.en ? "Nothing playing" : "尚未播放");
+    in property <string> now-artist: (Lang.en ? "Pick a song to start" : "選一首歌開始播放");
     in property <string> now-album;
     in property <string> now-detail;
     in property <image> cover-image;
@@ -72,7 +72,7 @@ export component MainWindow inherits Window {
     property <float> volume-before-mute: 0.8;
     in property <[LyricLine]> lyrics;
     in property <int> active-lyric: -1;
-    in property <string> lyrics-state: "等待播放";
+    in property <string> lyrics-state: (Lang.en ? "Waiting" : "等待播放");
     in property <bool> switching: false;
     callback toggle-play();
     callback prev();
@@ -106,7 +106,7 @@ export component MainWindow inherits Window {
     in property <bool> queue-view: false;
     in-out property <bool> close-to-tray: true;
     // audio output devices; index 0 = system default
-    in property <[string]> output-devices: ["系統預設"];
+    in property <[string]> output-devices: [(Lang.en ? "System default" : "系統預設")];
     in-out property <int> output-index: 0;
     callback output-picked(int);
     in-out property <bool> exclusive: false;
@@ -125,6 +125,16 @@ export component MainWindow inherits Window {
     callback queue-add(int);
     callback queue-remove(int);
     callback close-to-tray-toggled(bool);
+    // language (false = 繁體中文, true = English) and updates
+    callback language-picked(bool);
+    in-out property <bool> auto-update: true;
+    callback auto-update-toggled(bool);
+    in property <bool> update-available: false;
+    in property <string> update-url: "https://github.com/Akiraoo/SimplePlayer-Windows-APP/releases";
+    in property <string> update-status;
+    in property <bool> update-checking: false;
+    callback check-update();
+    callback open-url(string);
     public function refocus() { keys.focus(); }
     // bring row i into view (rows are 52 px high)
     public function scroll-to-row(i: int) {
@@ -198,7 +208,7 @@ export component MainWindow inherits Window {
                 }
                 VerticalLayout { alignment: center; Glyph { size: 30px; icon-size: 18px; icon: "refresh"; clicked => { root.rescan(); } } }
                 VerticalLayout { alignment: center; Glyph { size: 30px; icon-size: 18px; icon: "settings"; active: root.show-settings; clicked => { root.show-settings = true; } } }
-                VerticalLayout { alignment: center; Glyph { size: 30px; icon-size: 18px; icon: "info"; active: root.show-about; clicked => { root.show-about = true; } } }
+                VerticalLayout { alignment: center; Glyph { size: 30px; icon-size: 18px; icon: "info"; badge: root.update-available ? "!" : ""; active: root.show-about; clicked => { root.show-about = true; } } }
                 Rectangle { width: 6px; }
                 VerticalLayout {
                     alignment: center;
@@ -337,10 +347,10 @@ export component MainWindow inherits Window {
                         padding-right: 14px;
                         spacing: 12px;
                         HeaderCell { width: 30px; label: "#"; column: 0; align: TextHorizontalAlignment.center; sort-column: root.sort-column; sort-asc: root.sort-asc; sort(c) => { root.sort-by(c); } }
-                        HeaderCell { preferred-width: 0px; min-width: 0px; horizontal-stretch: 5; label: "標題"; column: 1; sort-column: root.sort-column; sort-asc: root.sort-asc; sort(c) => { root.sort-by(c); } }
-                        HeaderCell { preferred-width: 0px; min-width: 0px; horizontal-stretch: 3; label: "專輯"; column: 3; sort-column: root.sort-column; sort-asc: root.sort-asc; sort(c) => { root.sort-by(c); } }
-                        HeaderCell { width: 54px; label: "格式"; column: 5; align: TextHorizontalAlignment.center; sort-column: root.sort-column; sort-asc: root.sort-asc; sort(c) => { root.sort-by(c); } }
-                        HeaderCell { width: 52px; label: "時長"; column: 4; align: TextHorizontalAlignment.right; sort-column: root.sort-column; sort-asc: root.sort-asc; sort(c) => { root.sort-by(c); } }
+                        HeaderCell { preferred-width: 0px; min-width: 0px; horizontal-stretch: 5; label: (Lang.en ? "Title" : "標題"); column: 1; sort-column: root.sort-column; sort-asc: root.sort-asc; sort(c) => { root.sort-by(c); } }
+                        HeaderCell { preferred-width: 0px; min-width: 0px; horizontal-stretch: 3; label: (Lang.en ? "Album" : "專輯"); column: 3; sort-column: root.sort-column; sort-asc: root.sort-asc; sort(c) => { root.sort-by(c); } }
+                        HeaderCell { width: 54px; label: (Lang.en ? "Format" : "格式"); column: 5; align: TextHorizontalAlignment.center; sort-column: root.sort-column; sort-asc: root.sort-asc; sort(c) => { root.sort-by(c); } }
+                        HeaderCell { width: 52px; label: (Lang.en ? "Time" : "時長"); column: 4; align: TextHorizontalAlignment.right; sort-column: root.sort-column; sort-asc: root.sort-asc; sort(c) => { root.sort-by(c); } }
                         HeaderCell { width: 22px; label: ""; column: 6; sort-column: root.sort-column; sort-asc: root.sort-asc; sort(c) => { root.sort-by(c); } }
                     }
                     Rectangle { height: 1px; background: Palette.line; }
@@ -484,14 +494,14 @@ export component MainWindow inherits Window {
                                     alignment: center;
                                     Image { width: 72px; height: 72px; source: @image-url("../assets/icon.png"); }
                                 }
-                                Text { text: "這裡還沒有音樂"; color: Palette.strong; font-size: 16px; font-weight: 700; horizontal-alignment: TextHorizontalAlignment.center; }
-                                Text { text: "加入電腦裡的音樂資料夾，或連上你的 Simple Player 伺服器。"; color: Palette.muted; horizontal-alignment: TextHorizontalAlignment.center; }
+                                Text { text: (Lang.en ? "No music here yet" : "這裡還沒有音樂"); color: Palette.strong; font-size: 16px; font-weight: 700; horizontal-alignment: TextHorizontalAlignment.center; }
+                                Text { text: (Lang.en ? "Add a music folder from this PC, or connect to your Simple Player server." : "加入電腦裡的音樂資料夾，或連上你的 Simple Player 伺服器。"); color: Palette.muted; horizontal-alignment: TextHorizontalAlignment.center; }
                                 HorizontalLayout {
                                     alignment: center;
                                     spacing: 8px;
                                     padding-top: 4px;
-                                    Pill { label: "加入資料夾"; icon: "folder"; primary: true; clicked => { root.add-folder(); } }
-                                    Pill { label: "連線伺服器"; icon: "cloud"; clicked => { root.show-settings = true; } }
+                                    Pill { label: (Lang.en ? "Add folder" : "加入資料夾"); icon: "folder"; primary: true; clicked => { root.add-folder(); } }
+                                    Pill { label: (Lang.en ? "Connect server" : "連線伺服器"); icon: "cloud"; clicked => { root.show-settings = true; } }
                                 }
                             }
                         }
@@ -698,7 +708,7 @@ export component MainWindow inherits Window {
                 padding: 24px;
                 spacing: 10px;
                 HorizontalLayout {
-                    Text { text: "設定"; font-size: 20px; font-weight: 700; color: Palette.strong; vertical-alignment: TextVerticalAlignment.center; }
+                    Text { text: (Lang.en ? "Settings" : "設定"); font-size: 20px; font-weight: 700; color: Palette.strong; vertical-alignment: TextVerticalAlignment.center; }
                     Rectangle { horizontal-stretch: 1; }
                     VerticalLayout { alignment: center; Glyph { icon: "close"; clicked => { root.show-settings = false; keys.focus(); } } }
                 }
@@ -711,6 +721,78 @@ export component MainWindow inherits Window {
                             width: settings-scroll.width - 12px;
                             spacing: 10px;
 
+                            // general: language, updates
+                            Rectangle {
+                                border-radius: 12px;
+                                background: Palette.raised;
+                                VerticalLayout {
+                                    padding: 14px;
+                                    spacing: 10px;
+                                    HorizontalLayout {
+                                        spacing: 12px;
+                                        VerticalLayout {
+                                            horizontal-stretch: 1;
+                                            alignment: center;
+                                            Text { text: "語言 / Language"; color: Palette.strong; font-weight: 600; }
+                                        }
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Rectangle {
+                                                width: 186px;
+                                                height: 30px;
+                                                border-radius: 15px;
+                                                background: Palette.bg;
+                                                border-width: 1px;
+                                                border-color: Palette.line;
+                                                HorizontalLayout {
+                                                    padding: 3px;
+                                                    spacing: 2px;
+                                                    for opt[i] in ["繁體中文", "English"]: Rectangle {
+                                                        property <bool> on: (i == 1) == Lang.en;
+                                                        border-radius: 12px;
+                                                        background: self.on ? Palette.accent : (lgta.has-hover ? Palette.hover : transparent);
+                                                        Text {
+                                                            text: opt;
+                                                            color: parent.on ? Palette.accent-text : Palette.text;
+                                                            font-size: 11px;
+                                                            font-weight: parent.on ? 600 : 400;
+                                                            horizontal-alignment: TextHorizontalAlignment.center;
+                                                            vertical-alignment: TextVerticalAlignment.center;
+                                                        }
+                                                        lgta := TouchArea {
+                                                            mouse-cursor: pointer;
+                                                            clicked => { root.language-picked(i == 1); }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Rectangle { height: 1px; background: Palette.line; }
+                                    HorizontalLayout {
+                                        spacing: 12px;
+                                        VerticalLayout {
+                                            horizontal-stretch: 1;
+                                            spacing: 2px;
+                                            Text { text: Lang.en ? "Check for updates on start" : "啟動時自動檢查更新"; color: Palette.strong; font-weight: 600; }
+                                            Text {
+                                                text: Lang.en ? "Looks for a newer release on GitHub; nothing is downloaded or installed by itself." : "到 GitHub 查有沒有新版本；不會自己下載或安裝。";
+                                                color: Palette.muted;
+                                                font-size: 10px;
+                                                wrap: TextWrap.word-wrap;
+                                            }
+                                        }
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Toggle {
+                                                checked <=> root.auto-update;
+                                                toggled(on) => { root.auto-update-toggled(on); }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
                             // theme colour
                             Rectangle {
                                 border-radius: 12px;
@@ -718,7 +800,7 @@ export component MainWindow inherits Window {
                                 VerticalLayout {
                                     padding: 14px;
                                     spacing: 10px;
-                                    SectionLabel { text: "主題色（只換強調色，深淺色不受影響）"; }
+                                    SectionLabel { text: (Lang.en ? "Theme colour (accent only; light/dark stays as set)" : "主題色（只換強調色，深淺色不受影響）"); }
                                     HorizontalLayout {
                                         spacing: 8px;
                                         for sw in [
@@ -763,7 +845,7 @@ export component MainWindow inherits Window {
                                             placeholder: "#rrggbb";
                                             accepted(t) => { root.accent-picked(t); }
                                         }
-                                        VerticalLayout { alignment: center; Pill { label: "套用"; clicked => { root.accent-picked(root.accent-hex); } } }
+                                        VerticalLayout { alignment: center; Pill { label: (Lang.en ? "Apply" : "套用"); clicked => { root.accent-picked(root.accent-hex); } } }
                                     }
                                     Rectangle { height: 1px; background: Palette.line; }
                                     HorizontalLayout {
@@ -771,8 +853,8 @@ export component MainWindow inherits Window {
                                         VerticalLayout {
                                             horizontal-stretch: 1;
                                             spacing: 2px;
-                                            Text { text: "關閉視窗時縮到系統列"; color: Palette.strong; font-weight: 600; }
-                                            Text { text: "按關閉鈕後繼續在背景播放；從系統列圖示的選單「結束」才會完全關閉。"; color: Palette.muted; font-size: 10px; overflow: TextOverflow.elide; }
+                                            Text { text: (Lang.en ? "Close to the system tray" : "關閉視窗時縮到系統列"); color: Palette.strong; font-weight: 600; }
+                                            Text { text: (Lang.en ? "The close button keeps playing in the background; choose Quit in the tray icon menu to exit." : "按關閉鈕後繼續在背景播放；從系統列圖示的選單「結束」才會完全關閉。"); color: Palette.muted; font-size: 10px; overflow: TextOverflow.elide; }
                                         }
                                         VerticalLayout {
                                             alignment: center;
@@ -795,7 +877,7 @@ export component MainWindow inherits Window {
                                     HorizontalLayout {
                                         spacing: 8px;
                                         VerticalLayout { alignment: center; Icon { name: "volume"; size: 16px; color: Palette.accent; } }
-                                        SectionLabel { text: "音訊輸出裝置"; vertical-alignment: TextVerticalAlignment.center; }
+                                        SectionLabel { text: (Lang.en ? "Audio output device" : "音訊輸出裝置"); vertical-alignment: TextVerticalAlignment.center; }
                                     }
                                     // drop-down: shows the chosen device, the list opens in a popup
                                     out-btn := Rectangle {
@@ -881,9 +963,9 @@ export component MainWindow inherits Window {
                                         VerticalLayout {
                                             horizontal-stretch: 1;
                                             spacing: 2px;
-                                            Text { text: "WASAPI 獨佔模式"; color: Palette.strong; font-weight: 600; }
+                                            Text { text: (Lang.en ? "WASAPI exclusive mode" : "WASAPI 獨佔模式"); color: Palette.strong; font-weight: 600; }
                                             Text {
-                                                text: "開啟後依歌曲本身的取樣率與位元深度直接輸出（音量 100% 時為 bit-perfect），不經 Windows 混音；播放期間其他程式在這個裝置上會沒有聲音。";
+                                                text: (Lang.en ? "Sends each song at its own sample rate and bit depth (bit-perfect at 100% volume), bypassing the Windows mixer. Other apps can't play on this device meanwhile." : "開啟後依歌曲本身的取樣率與位元深度直接輸出（音量 100% 時為 bit-perfect），不經 Windows 混音；播放期間其他程式在這個裝置上會沒有聲音。");
                                                 color: Palette.muted;
                                                 font-size: 10px;
                                                 wrap: TextWrap.word-wrap;
@@ -902,9 +984,9 @@ export component MainWindow inherits Window {
                                         VerticalLayout {
                                             horizontal-stretch: 1;
                                             spacing: 2px;
-                                            Text { text: "緩衝大小"; color: Palette.strong; font-weight: 600; }
+                                            Text { text: (Lang.en ? "Buffer size" : "緩衝大小"); color: Palette.strong; font-weight: 600; }
                                             Text {
-                                                text: "播放會斷斷續續時調大；越大越穩，但暫停、跳轉的反應會慢一點。";
+                                                text: (Lang.en ? "Raise it if playback stutters. Bigger is steadier, but pause and seek react a little slower." : "播放會斷斷續續時調大；越大越穩，但暫停、跳轉的反應會慢一點。");
                                                 color: Palette.muted;
                                                 font-size: 10px;
                                                 wrap: TextWrap.word-wrap;
@@ -922,7 +1004,7 @@ export component MainWindow inherits Window {
                                                 HorizontalLayout {
                                                     padding: 3px;
                                                     spacing: 2px;
-                                                    for opt[i] in ["標準", "大", "超大"]: Rectangle {
+                                                    for opt[i] in (Lang.en ? ["Normal", "Large", "Max"] : ["標準", "大", "超大"]): Rectangle {
                                                         border-radius: 12px;
                                                         background: i == root.buffer-level ? Palette.accent : (bta.has-hover ? Palette.hover : transparent);
                                                         Text {
@@ -943,7 +1025,7 @@ export component MainWindow inherits Window {
                                         }
                                     }
                                     Text {
-                                        text: root.output-status == "" ? "" : "目前輸出：" + root.output-status;
+                                        text: root.output-status == "" ? "" : (Lang.en ? "Current output: " : "目前輸出：") + root.output-status;
                                         color: Palette.faint;
                                         font-size: 10px;
                                         // long status (e.g. why the device refused a format) must wrap,
@@ -963,17 +1045,17 @@ export component MainWindow inherits Window {
                                     HorizontalLayout {
                                         spacing: 8px;
                                         VerticalLayout { alignment: center; Icon { name: "cloud"; size: 16px; color: Palette.accent; } }
-                                        SectionLabel { text: "SIMPLE PLAYER 伺服器"; vertical-alignment: TextVerticalAlignment.center; }
+                                        SectionLabel { text: (Lang.en ? "SIMPLE PLAYER SERVER" : "SIMPLE PLAYER 伺服器"); vertical-alignment: TextVerticalAlignment.center; }
                                     }
                                     HorizontalLayout {
                                         spacing: 8px;
                                         Field {
                                             horizontal-stretch: 1;
                                             text <=> root.server-url;
-                                            placeholder: "例如 http://192.168.0.10:55555";
+                                            placeholder: (Lang.en ? "e.g. http://192.168.0.10:55555" : "例如 http://192.168.0.10:55555");
                                             accepted(t) => { root.save-server(t); }
                                         }
-                                        VerticalLayout { alignment: center; Pill { label: "連線"; primary: true; clicked => { root.save-server(root.server-url); } } }
+                                        VerticalLayout { alignment: center; Pill { label: (Lang.en ? "Connect" : "連線"); primary: true; clicked => { root.save-server(root.server-url); } } }
                                     }
                                     Text { text: root.server-status; color: Palette.muted; font-size: 11px; }
                                 }
@@ -989,7 +1071,7 @@ export component MainWindow inherits Window {
                                     HorizontalLayout {
                                         spacing: 8px;
                                         VerticalLayout { alignment: center; Icon { name: "folder"; size: 16px; color: Palette.accent; } }
-                                        SectionLabel { text: "本地音樂資料夾（子資料夾會成為歌單）"; vertical-alignment: TextVerticalAlignment.center; }
+                                        SectionLabel { text: (Lang.en ? "Local music folders (subfolders become playlists)" : "本地音樂資料夾（子資料夾會成為歌單）"); vertical-alignment: TextVerticalAlignment.center; }
                                     }
                                     Rectangle {
                                         height: 100px;
@@ -1030,7 +1112,7 @@ export component MainWindow inherits Window {
                                         if root.folders.length == 0: Text {
                                             width: parent.width;
                                             height: parent.height;
-                                            text: "還沒有加入資料夾";
+                                            text: (Lang.en ? "No folders added yet" : "還沒有加入資料夾");
                                             color: Palette.faint;
                                             horizontal-alignment: TextHorizontalAlignment.center;
                                             vertical-alignment: TextVerticalAlignment.center;
@@ -1039,8 +1121,8 @@ export component MainWindow inherits Window {
                                     HorizontalLayout {
                                         spacing: 8px;
                                         alignment: start;
-                                        Pill { label: "新增資料夾"; icon: "plus"; clicked => { root.add-folder(); } }
-                                        Pill { label: "重新掃描"; icon: "refresh"; clicked => { root.rescan(); } }
+                                        Pill { label: (Lang.en ? "Add folder" : "新增資料夾"); icon: "plus"; clicked => { root.add-folder(); } }
+                                        Pill { label: (Lang.en ? "Rescan" : "重新掃描"); icon: "refresh"; clicked => { root.rescan(); } }
                                     }
                                 }
                             }
@@ -1057,7 +1139,7 @@ export component MainWindow inherits Window {
                                         VerticalLayout {
                                             horizontal-stretch: 1;
                                             spacing: 3px;
-                                            Text { text: "Discord 狀態"; color: Palette.strong; font-weight: 600; }
+                                            Text { text: (Lang.en ? "Discord status" : "Discord 狀態"); color: Palette.strong; font-weight: 600; }
                                             Text { text: root.discord-status; color: Palette.muted; font-size: 10px; overflow: TextOverflow.elide; }
                                         }
                                         VerticalLayout {
@@ -1073,13 +1155,13 @@ export component MainWindow inherits Window {
                                         Field {
                                             horizontal-stretch: 1;
                                             text <=> root.public-url;
-                                            placeholder: "公開 https 網址（封面用，留空＝用伺服器的 publicOrigin）";
+                                            placeholder: (Lang.en ? "Public https URL (for covers; empty = the server's publicOrigin)" : "公開 https 網址（封面用，留空＝用伺服器的 publicOrigin）");
                                             accepted(t) => { root.save-public-url(t); }
                                         }
-                                        VerticalLayout { alignment: center; Pill { label: "儲存"; clicked => { root.save-public-url(root.public-url); } } }
+                                        VerticalLayout { alignment: center; Pill { label: (Lang.en ? "Save" : "儲存"); clicked => { root.save-public-url(root.public-url); } } }
                                     }
                                     Text {
-                                        text: "Discord 只能顯示公開 https 網址上的圖片，區網 http 位址無法顯示封面。";
+                                        text: (Lang.en ? "Discord can only show images from a public https URL; LAN http addresses can't show covers." : "Discord 只能顯示公開 https 網址上的圖片，區網 http 位址無法顯示封面。");
                                         color: Palette.faint;
                                         font-size: 10px;
                                         wrap: TextWrap.word-wrap;
@@ -1106,7 +1188,7 @@ export component MainWindow inherits Window {
         TouchArea { clicked => { root.show-about = false; } }
         Rectangle {
             width: 440px;
-            height: 430px;
+            height: 520px;
             border-radius: 18px;
             background: Palette.surface;
             border-width: 1px;
@@ -1123,11 +1205,47 @@ export component MainWindow inherits Window {
                 }
                 Text { text: "Simple Player for Windows"; font-size: 17px; font-weight: 700; color: Palette.strong; horizontal-alignment: TextHorizontalAlignment.center; }
                 Text { text: "v" + root.app-version + "  ·  Apache License 2.0"; color: Palette.accent; font-size: 11px; font-weight: 600; horizontal-alignment: TextHorizontalAlignment.center; }
-                Text { text: "本地音樂與 Simple Player Web Server，內建 Discord 狀態。"; color: Palette.muted; font-size: 11px; horizontal-alignment: TextHorizontalAlignment.center; wrap: TextWrap.word-wrap; }
-                AboutSlint { height: 150px; }
+                Text { text: (Lang.en ? "Local music and Simple Player Web Server, with Discord status built in." : "本地音樂與 Simple Player Web Server，內建 Discord 狀態。"); color: Palette.muted; font-size: 11px; horizontal-alignment: TextHorizontalAlignment.center; wrap: TextWrap.word-wrap; }
+                Text { text: Lang.en ? "Made by Akiraoo" : "Akiraoo 製作"; color: Palette.text; font-size: 12px; font-weight: 600; horizontal-alignment: TextHorizontalAlignment.center; }
                 HorizontalLayout {
                     alignment: center;
-                    Pill { label: "關閉"; clicked => { root.show-about = false; } }
+                    Rectangle {
+                        width: gh.preferred-width;
+                        height: gh.preferred-height;
+                        gh := Text {
+                            text: "github.com/Akiraoo/SimplePlayer-Windows-APP";
+                            color: ghta.has-hover ? Palette.accent-hover : Palette.accent;
+                            font-size: 11px;
+                        }
+                        ghta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.open-url("https://github.com/Akiraoo/SimplePlayer-Windows-APP"); }
+                        }
+                    }
+                }
+                AboutSlint { height: 150px; }
+                Text {
+                    text: root.update-status;
+                    visible: root.update-status != "";
+                    color: root.update-available ? Palette.accent : Palette.muted;
+                    font-size: 11px;
+                    horizontal-alignment: TextHorizontalAlignment.center;
+                    wrap: TextWrap.word-wrap;
+                }
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 8px;
+                    if root.update-available: Pill {
+                        label: Lang.en ? "Download" : "前往下載";
+                        primary: true;
+                        clicked => { root.open-url(root.update-url); }
+                    }
+                    Pill {
+                        label: root.update-checking ? (Lang.en ? "Checking…" : "檢查中…") : (Lang.en ? "Check for updates" : "檢查更新");
+                        icon: "refresh";
+                        clicked => { if (!root.update-checking) { root.check-update(); } }
+                    }
+                    Pill { label: (Lang.en ? "Close" : "關閉"); clicked => { root.show-about = false; } }
                 }
             }
         }
@@ -1137,7 +1255,7 @@ export component MainWindow inherits Window {
 /* ---------------- detached player ---------------- */
 
 export component PlayerWindow inherits Window {
-    title: "Simple Player · 正在播放";
+    title: (Lang.en ? "Simple Player · Now playing" : "Simple Player · 正在播放");
     no-frame: true;
     always-on-top: root.pinned;
     preferred-width: 360px;
@@ -1149,8 +1267,8 @@ export component PlayerWindow inherits Window {
     default-font-family: "Segoe UI";
 
     in-out property <bool> pinned: false;
-    in property <string> now-title: "尚未播放";
-    in property <string> now-artist: "選一首歌開始播放";
+    in property <string> now-title: (Lang.en ? "Nothing playing" : "尚未播放");
+    in property <string> now-artist: (Lang.en ? "Pick a song to start" : "選一首歌開始播放");
     in property <string> now-album;
     in property <string> now-detail;
     in property <image> cover-image;
@@ -1161,7 +1279,7 @@ export component PlayerWindow inherits Window {
     in property <string> duration-text: "0:00";
     in property <[LyricLine]> lyrics;
     in property <int> active-lyric: -1;
-    in property <string> lyrics-state: "等待播放";
+    in property <string> lyrics-state: (Lang.en ? "Waiting" : "等待播放");
     in property <bool> switching: false;
     callback toggle-play();
     callback prev();
@@ -1217,7 +1335,7 @@ export component PlayerWindow inherits Window {
                     Image { width: 18px; height: 18px; source: @image-url("../assets/icon-small.png"); }
                 }
                 Text {
-                    text: "正在播放";
+                    text: (Lang.en ? "Now playing" : "正在播放");
                     font-size: 12px;
                     font-weight: 600;
                     color: Palette.text;

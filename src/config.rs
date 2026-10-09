@@ -38,6 +38,10 @@ pub struct Config {
     pub exclusive: bool,
     /// Settings → 緩衝大小: 0 標準, 1 大, 2 超大.
     pub buffer_level: u8,
+    /// Interface language: "zh-TW", "en", or empty = follow Windows on first start.
+    pub lang: String,
+    /// Look for a newer release on GitHub at start-up.
+    pub auto_update: bool,
 }
 
 impl Default for Config {
@@ -63,6 +67,8 @@ impl Default for Config {
             output_device: String::new(),
             exclusive: false,
             buffer_level: 1,
+            lang: String::new(),
+            auto_update: true,
         }
     }
 }

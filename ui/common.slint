@@ -8,6 +8,11 @@ export struct LyricLine {
     timed: bool,
 }
 
+// Interface language (main.rs sets it on both windows): false = 繁體中文, true = English.
+export global Lang {
+    in-out property <bool> en: false;
+}
+
 export global Palette {
     in-out property <bool> light: false;
     // surfaces (pure greys, follow the light/dark setting)
@@ -237,7 +242,7 @@ export component SearchBox inherits Rectangle {
     Text {
         x: 36px;
         visible: input.text == "";
-        text: "搜尋歌曲、歌手、專輯";
+        text: (Lang.en ? "Search songs, artists, albums" : "搜尋歌曲、歌手、專輯");
         color: Palette.faint;
         font-size: 12px;
         height: parent.height;
@@ -506,7 +511,7 @@ export component NowPanel inherits Rectangle {
         }
         HorizontalLayout {
             height: 30px;
-            SectionLabel { text: "歌詞"; vertical-alignment: TextVerticalAlignment.center; }
+            SectionLabel { text: (Lang.en ? "Lyrics" : "歌詞"); vertical-alignment: TextVerticalAlignment.center; }
             Rectangle { horizontal-stretch: 1; }
             SectionLabel { text: root.lyrics-state; font-size: 9px; vertical-alignment: TextVerticalAlignment.center; }
         }
@@ -565,7 +570,7 @@ export component NowPanel inherits Rectangle {
             if root.lyrics.length == 0: Text {
                 y: 24px;
                 width: parent.width;
-                text: "沒有可顯示的歌詞";
+                text: (Lang.en ? "No lyrics" : "沒有可顯示的歌詞");
                 color: Palette.faint;
                 font-size: 11px;
             }
