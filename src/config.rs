@@ -42,6 +42,8 @@ pub struct Config {
     pub lang: String,
     /// Look for a newer release on GitHub at start-up.
     pub auto_update: bool,
+    /// ReplayGain: 0 off, 1 track, 2 album.
+    pub replaygain: u8,
 }
 
 impl Default for Config {
@@ -69,6 +71,7 @@ impl Default for Config {
             buffer_level: 1,
             lang: String::new(),
             auto_update: true,
+            replaygain: 0,
         }
     }
 }

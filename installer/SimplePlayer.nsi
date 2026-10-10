@@ -72,6 +72,12 @@ LangString SecUnData     ${LANG_TRADCHINESE} "同時刪除設定與快取（AppD
 LangString SecUnData     ${LANG_ENGLISH}     "Also delete settings and caches (AppData)"
 LangString Need64        ${LANG_TRADCHINESE} "Simple Player 需要 64 位元的 Windows。"
 LangString Need64        ${LANG_ENGLISH}     "Simple Player requires 64-bit Windows."
+LangString SecFFmpeg     ${LANG_TRADCHINESE} "FFmpeg（播放 Opus、APE、WavPack、DSD、Dolby 等格式）"
+LangString SecFFmpeg     ${LANG_ENGLISH}     "FFmpeg (plays Opus, APE, WavPack, DSD, Dolby and more)"
+LangString SecAssoc      ${LANG_TRADCHINESE} "加入音訊檔的「開啟檔案」選單（迷你播放器）"
+LangString SecAssoc      ${LANG_ENGLISH}     "Add to $\"Open with$\" for audio files (mini player)"
+LangString AudioFile     ${LANG_TRADCHINESE} "音訊檔"
+LangString AudioFile     ${LANG_ENGLISH}     "Audio file"
 LangString UninstName    ${LANG_TRADCHINESE} "解除安裝 Simple Player"
 LangString UninstName    ${LANG_ENGLISH}     "Uninstall Simple Player"
 
@@ -125,6 +131,80 @@ Section "$(SecMain)" SEC_MAIN
   WriteRegDWORD HKLM "${UNINSTKEY}" "EstimatedSize" "$0"
 SectionEnd
 
+; FFmpeg is bundled only when the build machine has vendor\ffmpeg.exe (Build-Release.bat
+; copies it there). The app looks for ffmpeg.exe next to SimplePlayer.exe first.
+!if /FileExists "${ROOT}\vendor\ffmpeg.exe"
+Section "$(SecFFmpeg)" SEC_FFMPEG
+  SetOutPath "$INSTDIR"
+  File "${ROOT}\vendor\ffmpeg.exe"
+  !if /FileExists "${ROOT}\vendor\FFmpeg-LICENSE.txt"
+    File "${ROOT}\vendor\FFmpeg-LICENSE.txt"
+  !endif
+SectionEnd
+!endif
+
+; ---------------- "Open with" ----------------
+; Double-clicking an audio file (once the user picks Simple Player) opens the mini player:
+;   SimplePlayer.exe --mini "<file>"
+; Windows 10/11 don't let installers take over the default app; the user chooses it in
+; "Open with" or Settings > Default apps, where Simple Player is now listed.
+!define PROGID "SimplePlayer.Audio"
+!define CAPS   "Software\SimplePlayer\Capabilities"
+
+!macro AssocExt EXT
+  WriteRegStr HKLM "Software\Classes\.${EXT}\OpenWithProgids" "${PROGID}" ""
+  WriteRegStr HKLM "Software\Classes\Applications\${EXENAME}\SupportedTypes" ".${EXT}" ""
+  WriteRegStr HKLM "${CAPS}\FileAssociations" ".${EXT}" "${PROGID}"
+!macroend
+
+!macro UnassocExt EXT
+  DeleteRegValue HKLM "Software\Classes\.${EXT}\OpenWithProgids" "${PROGID}"
+!macroend
+
+Section "$(SecAssoc)" SEC_ASSOC
+  WriteRegStr HKLM "Software\Classes\${PROGID}" "" "$(AudioFile) (Simple Player)"
+  WriteRegStr HKLM "Software\Classes\${PROGID}\DefaultIcon" "" '"$INSTDIR\${EXENAME}",0'
+  WriteRegStr HKLM "Software\Classes\${PROGID}\shell\open\command" "" '"$INSTDIR\${EXENAME}" --mini "%1"'
+  WriteRegStr HKLM "Software\Classes\Applications\${EXENAME}" "FriendlyAppName" "${APPNAME}"
+  WriteRegStr HKLM "Software\Classes\Applications\${EXENAME}\DefaultIcon" "" '"$INSTDIR\${EXENAME}",0'
+  WriteRegStr HKLM "Software\Classes\Applications\${EXENAME}\shell\open\command" "" '"$INSTDIR\${EXENAME}" --mini "%1"'
+  WriteRegStr HKLM "${CAPS}" "ApplicationName" "${APPNAME}"
+  WriteRegStr HKLM "${CAPS}" "ApplicationDescription" "Simple Player"
+  WriteRegStr HKLM "${CAPS}" "ApplicationIcon" '"$INSTDIR\${EXENAME}",0'
+  !insertmacro AssocExt "mp3"
+  !insertmacro AssocExt "mp2"
+  !insertmacro AssocExt "flac"
+  !insertmacro AssocExt "m4a"
+  !insertmacro AssocExt "m4b"
+  !insertmacro AssocExt "aac"
+  !insertmacro AssocExt "alac"
+  !insertmacro AssocExt "ogg"
+  !insertmacro AssocExt "oga"
+  !insertmacro AssocExt "opus"
+  !insertmacro AssocExt "wav"
+  !insertmacro AssocExt "w64"
+  !insertmacro AssocExt "wma"
+  !insertmacro AssocExt "ape"
+  !insertmacro AssocExt "wv"
+  !insertmacro AssocExt "tta"
+  !insertmacro AssocExt "mpc"
+  !insertmacro AssocExt "dsf"
+  !insertmacro AssocExt "dff"
+  !insertmacro AssocExt "aiff"
+  !insertmacro AssocExt "aif"
+  !insertmacro AssocExt "aifc"
+  !insertmacro AssocExt "caf"
+  !insertmacro AssocExt "mka"
+  !insertmacro AssocExt "ac3"
+  !insertmacro AssocExt "eac3"
+  !insertmacro AssocExt "ec3"
+  !insertmacro AssocExt "dts"
+  !insertmacro AssocExt "thd"
+  WriteRegStr HKLM "Software\RegisteredApplications" "${APPNAME}" "${CAPS}"
+  ; tell Explorer the associations changed (SHCNE_ASSOCCHANGED)
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
+SectionEnd
+
 Section "$(SecStart)" SEC_START
   SetShellVarContext all
   CreateDirectory "$SMPROGRAMS\${APPNAME}"
@@ -151,8 +231,45 @@ Section "un.$(SecMain)" UNSEC_MAIN
   Delete "$INSTDIR\${EXENAME}"
   Delete "$INSTDIR\LICENSE"
   Delete "$INSTDIR\README.md"
+  Delete "$INSTDIR\ffmpeg.exe"
+  Delete "$INSTDIR\FFmpeg-LICENSE.txt"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir "$INSTDIR"
+
+  ; "Open with" registration
+  !insertmacro UnassocExt "mp3"
+  !insertmacro UnassocExt "mp2"
+  !insertmacro UnassocExt "flac"
+  !insertmacro UnassocExt "m4a"
+  !insertmacro UnassocExt "m4b"
+  !insertmacro UnassocExt "aac"
+  !insertmacro UnassocExt "alac"
+  !insertmacro UnassocExt "ogg"
+  !insertmacro UnassocExt "oga"
+  !insertmacro UnassocExt "opus"
+  !insertmacro UnassocExt "wav"
+  !insertmacro UnassocExt "w64"
+  !insertmacro UnassocExt "wma"
+  !insertmacro UnassocExt "ape"
+  !insertmacro UnassocExt "wv"
+  !insertmacro UnassocExt "tta"
+  !insertmacro UnassocExt "mpc"
+  !insertmacro UnassocExt "dsf"
+  !insertmacro UnassocExt "dff"
+  !insertmacro UnassocExt "aiff"
+  !insertmacro UnassocExt "aif"
+  !insertmacro UnassocExt "aifc"
+  !insertmacro UnassocExt "caf"
+  !insertmacro UnassocExt "mka"
+  !insertmacro UnassocExt "ac3"
+  !insertmacro UnassocExt "eac3"
+  !insertmacro UnassocExt "ec3"
+  !insertmacro UnassocExt "dts"
+  !insertmacro UnassocExt "thd"
+  DeleteRegKey HKLM "Software\Classes\${PROGID}"
+  DeleteRegKey HKLM "Software\Classes\Applications\${EXENAME}"
+  DeleteRegValue HKLM "Software\RegisteredApplications" "${APPNAME}"
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
 
   DeleteRegKey HKLM "${UNINSTKEY}"
   DeleteRegKey HKLM "Software\SimplePlayer"

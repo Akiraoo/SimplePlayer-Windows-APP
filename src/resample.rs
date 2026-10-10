@@ -111,6 +111,16 @@ impl Resampler {
         self.frac = 0;
     }
 
+    /// The last few output frames still held back by the filter (call at the end of a song,
+    /// so the next one follows without losing that sliver).
+    pub fn flush(&mut self) -> Vec<f32> {
+        if self.passthrough {
+            return Vec::new();
+        }
+        let zeros = vec![0f32; self.half * 2];
+        self.process(&zeros)
+    }
+
     /// Converts a block of interleaved stereo frames. Output lags input by `half` frames
     /// (< 1 ms); state carries over between blocks.
     pub fn process(&mut self, input: &[f32]) -> Vec<f32> {

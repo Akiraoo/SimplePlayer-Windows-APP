@@ -10,6 +10,15 @@ if errorlevel 1 goto end
 echo.
 echo Done: target\release\SimplePlayer.exe
 
+rem FFmpeg for the installer: the decode-only LGPL build from tools\ffmpeg-lite (see its
+rem README) goes in vendor\ffmpeg.exe. Without it the installer is built without FFmpeg.
+if exist vendor\ffmpeg.exe (
+  copy /y tools\ffmpeg-lite\FFmpeg-LICENSE.txt vendor\FFmpeg-LICENSE.txt >nul
+  echo FFmpeg: bundled into the installer
+) else (
+  echo FFmpeg: vendor\ffmpeg.exe not found - installer without FFmpeg ^(see tools\ffmpeg-lite\README.md^)
+)
+
 rem Installer (needs NSIS: https://nsis.sourceforge.io)
 for /f "tokens=2 delims== " %%v in ('findstr /b "version" Cargo.toml') do set VER=%%~v
 set MAKENSIS=

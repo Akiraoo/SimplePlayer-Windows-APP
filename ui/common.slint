@@ -501,10 +501,35 @@ export component NowPanel inherits Rectangle {
                     alignment: start;
                     Rectangle {
                         height: 20px;
-                        width: det.preferred-width + 16px;
+                        // codec · format · source; the layout shrinks it (with "…") when the
+                        // panel is narrower, without measuring the panel itself
+                        min-width: 0px;
+                        preferred-width: measure.preferred-width + 16px;
+                        max-width: measure.preferred-width + 16px;
+                        horizontal-stretch: 1;
                         border-radius: 10px;
                         background: Palette.raised;
-                        det := Text { text: root.now-detail; color: Palette.muted; font-size: 9px; font-weight: 600; letter-spacing: 0.8px; horizontal-alignment: TextHorizontalAlignment.center; vertical-alignment: TextVerticalAlignment.center; }
+                        // same text, never drawn: its natural width sizes the badge
+                        measure := Text {
+                            visible: false;
+                            text: root.now-detail;
+                            font-size: 9px;
+                            font-weight: 600;
+                            letter-spacing: 0.8px;
+                        }
+                        det := Text {
+                            x: 8px;
+                            width: parent.width - 16px;
+                            height: parent.height;
+                            text: root.now-detail;
+                            color: Palette.muted;
+                            font-size: 9px;
+                            font-weight: 600;
+                            letter-spacing: 0.8px;
+                            overflow: TextOverflow.elide;
+                            horizontal-alignment: TextHorizontalAlignment.center;
+                            vertical-alignment: TextVerticalAlignment.center;
+                        }
                     }
                 }
             }

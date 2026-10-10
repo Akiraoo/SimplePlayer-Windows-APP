@@ -40,10 +40,15 @@ mod imp {
 
     /// `None` = another copy is already running; it has been asked to show its window.
     pub fn acquire() -> Option<Instance> {
+        acquire_named("SimplePlayer.SingleInstance", "SimplePlayer.ShowWindow")
+    }
+
+    /// Same with own names (the mini player is a separate single-instance program).
+    pub fn acquire_named(mutex: &str, event: &str) -> Option<Instance> {
         unsafe {
-            let event_name = wide("Local\\SimplePlayer.ShowWindow");
+            let event_name = wide(&format!("Local\\{event}"));
             let show_event = CreateEventW(std::ptr::null(), 0, 0, event_name.as_ptr());
-            let mutex_name = wide("Local\\SimplePlayer.SingleInstance");
+            let mutex_name = wide(&format!("Local\\{mutex}"));
             let mutex = CreateMutexW(std::ptr::null(), 0, mutex_name.as_ptr());
             if !mutex.is_null() && GetLastError() == ERROR_ALREADY_EXISTS {
                 // let the running copy take the foreground, then wake it up
@@ -72,6 +77,9 @@ mod imp {
     pub fn acquire() -> Option<Instance> {
         Some(Instance)
     }
+    pub fn acquire_named(_: &str, _: &str) -> Option<Instance> {
+        Some(Instance)
+    }
     impl Instance {
         pub fn show_requested(&self) -> bool {
             false
@@ -79,4 +87,4 @@ mod imp {
     }
 }
 
-pub use imp::acquire;
+pub use imp::{acquire, acquire_named, Instance};

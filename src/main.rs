@@ -4,9 +4,11 @@
 mod i18n;
 mod config;
 mod discord;
+mod ffdec;
 mod httpsrc;
 mod library;
 mod media;
+mod mini;
 mod player;
 mod resample;
 mod server;
@@ -55,6 +57,23 @@ impl View {
 }
 
 /// Results of the background loading before a song starts.
+/// What happens when the current song ends by itself, worked out in advance so the player
+/// can preload that song and continue without a gap (mirrors `advance(true)`).
+#[derive(Clone)]
+enum Plan {
+    /// repeat one
+    Same,
+    /// in the queue (temporary playlist): drop the finished song (`removed`), then play
+    /// `pick` (index after the removal)
+    Upnext {
+        removed: Option<usize>,
+        pick: usize,
+        key: String,
+    },
+    /// the current list continues at `pos`
+    Pos { pos: usize, key: String },
+}
+
 enum Loaded {
     Cover(Option<PathBuf>),
     Lyrics(Vec<(Option<f64>, String)>),
@@ -80,6 +99,13 @@ struct App {
     rng: u64,
     /// Restored session: open the song paused at this position.
     resume_at: Option<f64>,
+    /// Last `Player::stream_info` generation shown in the now-playing badge.
+    info_gen: u64,
+    /// Gapless: recompute and send the preloaded next song on the next tick.
+    preload_dirty: bool,
+    preload_token: u64,
+    /// Plans sent to the player, by token (the last few).
+    plans: Vec<(u64, Plan)>,
     /// After a restore, stay quiet (no Discord) until the user presses play.
     idle_restore: bool,
     last_session_save: Instant,
@@ -668,6 +694,7 @@ impl App {
     }
 
     fn cycle_repeat(&mut self) {
+        self.preload_dirty = true;
         self.cfg.repeat = (self.cfg.repeat + 1) % 3;
         config::save(&self.cfg);
         self.push_modes();
@@ -687,6 +714,7 @@ impl App {
 
     /// Sidebar count and the queue view after the queue changed.
     fn queue_changed(&mut self) {
+        self.preload_dirty = true;
         if self.view == View::Queue {
             self.refresh_list();
         }
@@ -1027,10 +1055,21 @@ impl App {
     /// Switches to `t`: the now-playing area fades out, cover and lyrics are loaded in the
     /// background, and only then the new song is shown and starts playing.
     fn start(&mut self, t: Track) {
+        self.switch_to(t, true);
+    }
+
+    /// `open_audio` false = the player already moved on to `t` by itself (gapless): only the
+    /// now-playing area changes.
+    fn switch_to(&mut self, t: Track, open_audio: bool) {
         self.load_gen += 1;
-        self.switching = true;
+        // while a gapless switch only redraws, play/pause keeps working
+        self.switching = open_audio;
         let gen = self.load_gen;
-        self.player.stop();
+        if open_audio {
+            self.player.stop();
+            // a gapless switch reported just before this must not move the UI on
+            self.plans.clear();
+        }
         self.current = Some(t.clone());
         self.cover_file = None;
         // a restored session opens paused: don't flash the pause icon meanwhile
@@ -1103,7 +1142,7 @@ impl App {
             }
             let cover = cover.flatten();
             let lyrics = lyrics.unwrap_or_default();
-            post(move |app| app.finish_switch(gen, t, cover, lyrics));
+            post(move |app| app.finish_switch(gen, t, cover, lyrics, open_audio));
         });
     }
 
@@ -1113,6 +1152,7 @@ impl App {
         t: Track,
         cover: Option<PathBuf>,
         lyrics: Vec<(Option<f64>, String)>,
+        open_audio: bool,
     ) {
         if gen != self.load_gen {
             return; // the user already picked another song
@@ -1167,7 +1207,7 @@ impl App {
         }
 
         // Now start the audio (a restored session opens paused at the saved position).
-        let resume = self.resume_at.take();
+        let resume = if open_audio { self.resume_at.take() } else { None };
         let paused = resume.is_some();
         if paused {
             self.last_playing = false;
@@ -1175,40 +1215,15 @@ impl App {
                 ui.set_playing(false);
             }
         }
-        let ext = Some(t.ext.clone());
-        match t.source {
-            Source::Local => {
-                let Some(path) = t.path.clone() else { return };
-                self.player.open(
-                    Box::new(move || {
-                        std::fs::File::open(&path)
-                            .map(|f| Box::new(f) as Box<dyn symphonia::core::io::MediaSource>)
-                            .map_err(|e| crate::tr!("無法開啟檔案：{}", "Can't open the file: {}", e))
-                    }),
-                    ext,
-                    paused,
-                );
-            }
-            Source::Server => {
-                let (Some(s), Some(id)) = (&self.server, t.server_id.clone()) else {
-                    return;
-                };
-                let url = server::stream_url(&s.base, &id);
-                let client = self.client.clone();
-                self.player.open(
-                    Box::new(move || {
-                        httpsrc::HttpSource::open(client, url)
-                            .map(|h| Box::new(h) as Box<dyn symphonia::core::io::MediaSource>)
-                            .map_err(|e| crate::tr!("無法串流：{}", "Can't stream: {}", e))
-                    }),
-                    ext,
-                    paused,
-                );
+        if open_audio {
+            let Some(item) = self.item_for(&t) else { return };
+            self.player.open(item, paused);
+            if let Some(at) = resume.filter(|p| *p > 1.0) {
+                self.player.seek(at);
             }
         }
-        if let Some(at) = resume.filter(|p| *p > 1.0) {
-            self.player.seek(at);
-        }
+        self.preload_dirty = true;
+        self.info_gen = 0; // show the decoder's format details on the next tick
         if let Some(m) = self.media.as_mut() {
             let cover = self
                 .cover_file
@@ -1229,6 +1244,169 @@ impl App {
         // Presence is pushed as soon as the decoder knows the duration (see sync_state).
         self.opened_at = Instant::now();
         self.presence_dirty.get_or_insert_with(Instant::now);
+    }
+
+    /// How the player reads `t`: Symphonia through a file / HTTP stream, FFmpeg as the
+    /// fallback for formats Symphonia doesn't know.
+    fn item_for(&self, t: &Track) -> Option<player::Item> {
+        let ext = Some(t.ext.clone());
+        let duration_hint = t.duration_ms as f64 / 1000.0;
+        match t.source {
+            Source::Local => {
+                let path = t.path.clone()?;
+                let alt = Some(ffdec::Input::Path(path.clone()));
+                Some(player::Item {
+                    open: Box::new(move || {
+                        std::fs::File::open(&path)
+                            .map(|f| Box::new(f) as Box<dyn symphonia::core::io::MediaSource>)
+                            .map_err(|e| crate::tr!("無法開啟檔案：{}", "Can't open the file: {}", e))
+                    }),
+                    ext,
+                    alt,
+                    duration_hint,
+                })
+            }
+            Source::Server => {
+                let s = self.server.as_ref()?;
+                let id = t.server_id.clone()?;
+                let url = server::stream_url(&s.base, &id);
+                let alt = Some(ffdec::Input::Url(url.clone()));
+                let client = self.client.clone();
+                Some(player::Item {
+                    open: Box::new(move || {
+                        httpsrc::HttpSource::open(client, url)
+                            .map(|h| Box::new(h) as Box<dyn symphonia::core::io::MediaSource>)
+                            .map_err(|e| crate::tr!("無法串流：{}", "Can't stream: {}", e))
+                    }),
+                    ext,
+                    alt,
+                    duration_hint,
+                })
+            }
+        }
+    }
+
+    /* ---------- gapless ---------- */
+
+    /// What `advance(true)` would do now, without doing it. None = stop, or a case that
+    /// needs the normal path (re-shuffling at the end of repeat-all).
+    fn plan_next(&mut self) -> Option<Plan> {
+        self.current.as_ref()?;
+        if self.queue.is_empty() && self.upnext_cur.is_none() {
+            return None;
+        }
+        if self.cfg.repeat == 2 {
+            return Some(Plan::Same);
+        }
+        if let Some(k) = self.upnext_cur {
+            let removed = (k < self.upnext.len()).then_some(k);
+            let n = self.upnext.len() - removed.map_or(0, |_| 1);
+            let next = k;
+            let pick = if n == 0 {
+                return None;
+            } else if self.cfg.shuffle && n > 1 {
+                (self.rand() % n as u64) as usize
+            } else if next < n {
+                next
+            } else if self.cfg.repeat >= 1 {
+                0
+            } else {
+                return None;
+            };
+            // index before the removal, to read the key now
+            let before = match removed {
+                Some(r) if pick >= r => pick + 1,
+                _ => pick,
+            };
+            let key = self.upnext.get(before)?.key.clone();
+            return Some(Plan::Upnext { removed, pick, key });
+        }
+        let pos = if self.queue_pos + 1 < self.queue.len() {
+            self.queue_pos + 1
+        } else if self.cfg.repeat >= 1 && !(self.cfg.shuffle && self.queue.len() > 2) {
+            0
+        } else {
+            return None;
+        };
+        let key = self.queue.get(pos)?.key.clone();
+        Some(Plan::Pos { pos, key })
+    }
+
+    /// Hands the player the song that follows the current one (called from the tick).
+    fn send_preload(&mut self) {
+        self.preload_dirty = false;
+        let Some(plan) = self.plan_next() else {
+            return;
+        };
+        let t = match &plan {
+            Plan::Same => self.current.clone(),
+            Plan::Upnext { key, .. } | Plan::Pos { key, .. } => self
+                .upnext
+                .iter()
+                .chain(self.queue.iter())
+                .find(|t| &t.key == key)
+                .cloned(),
+        };
+        let Some(item) = t.as_ref().and_then(|t| self.item_for(t)) else {
+            return;
+        };
+        self.preload_token += 1;
+        let token = self.preload_token;
+        self.plans.push((token, plan));
+        if self.plans.len() > 4 {
+            self.plans.remove(0);
+        }
+        self.player.preload(token, item);
+    }
+
+    /// The player moved on to a preloaded song by itself: update the state to match.
+    fn on_advanced(&mut self, token: u64) {
+        let Some(plan) = self
+            .plans
+            .iter()
+            .find(|(t, _)| *t == token)
+            .map(|(_, p)| p.clone())
+        else {
+            return;
+        };
+        self.plans.clear();
+        self.idle_restore = false;
+        let t = match plan {
+            Plan::Same => self.current.clone(),
+            Plan::Upnext { removed, pick, key } => {
+                if let Some(r) = removed {
+                    if r < self.upnext.len() {
+                        self.upnext.remove(r);
+                    }
+                }
+                let i = if self.upnext.get(pick).map(|t| &t.key) == Some(&key) {
+                    Some(pick)
+                } else {
+                    self.upnext.iter().position(|t| t.key == key)
+                };
+                self.upnext_cur = i;
+                let t = i.and_then(|i| self.upnext.get(i).cloned());
+                self.queue_changed();
+                t
+            }
+            Plan::Pos { pos, key } => {
+                let i = if self.queue.get(pos).map(|t| &t.key) == Some(&key) {
+                    Some(pos)
+                } else {
+                    self.queue.iter().position(|t| t.key == key)
+                };
+                if let Some(i) = i {
+                    self.queue_pos = i;
+                }
+                self.upnext_cur = None;
+                let t = i.and_then(|i| self.queue.get(i).cloned());
+                self.queue_changed();
+                t
+            }
+        };
+        if let Some(t) = t {
+            self.switch_to(t, false);
+        }
     }
 
     fn set_lyrics(&mut self, lines: Vec<(Option<f64>, String)>) {
@@ -1300,6 +1478,7 @@ impl App {
     /// Next song. `auto` = the current one ended by itself (repeat-one replays it).
     /// Queued songs come first; after them the current list continues where it was.
     fn advance(&mut self, auto: bool) {
+        self.plans.clear();
         if self.queue.is_empty() && self.upnext_cur.is_none() {
             return;
         }
@@ -1429,6 +1608,7 @@ impl App {
     fn on_player_event(&mut self, ev: PlayerEvent) {
         match ev {
             PlayerEvent::Ended => self.advance(true),
+            PlayerEvent::Advanced(token) => self.on_advanced(token),
             PlayerEvent::Error(e) => {
                 self.status = e;
                 self.update_status();
@@ -1464,7 +1644,17 @@ impl App {
             self.active_lyric = active;
             ui.set_active_lyric(active);
         }
+        let (gen, info) = self.player.stream_info();
+        if gen != self.info_gen && !self.switching {
+            self.info_gen = gen;
+            if let (Some(info), Some(t)) = (info, self.current.as_ref()) {
+                ui.set_now_detail(format_badge(&info, t).into());
+            }
+        }
         self.mirror_player(false);
+        if self.preload_dirty && !self.switching && self.player.is_active() {
+            self.send_preload();
+        }
         if self.last_session_save.elapsed() > Duration::from_secs(15) {
             self.save_session();
         }
@@ -1813,6 +2003,123 @@ fn luminance((r, g, b): (u8, u8, u8)) -> f32 {
 
 /// Applies the theme colour to a window's palette: a variant readable on the dark and on
 /// the light background, plus a text colour that stays legible on top of it.
+/// Codec as people know it ("DD+", "FLAC", "PCM"…) from the decoder's name.
+fn codec_label(codec: &str) -> String {
+    let c = codec.to_ascii_lowercase();
+    let s = match c.as_str() {
+        "flac" => "FLAC",
+        "alac" => "ALAC",
+        "mp3" | "mp3float" | "mp3adu" | "mp3adufloat" => "MP3",
+        "mp2" | "mp2float" => "MP2",
+        "mp1" | "mp1float" => "MP1",
+        "aac" | "aac_fixed" | "aac_latm" => "AAC",
+        "vorbis" => "Vorbis",
+        "opus" => "Opus",
+        "ac3" | "ac3_fixed" => "DD",
+        "eac3" => "DD+",
+        "truehd" => "TrueHD",
+        "mlp" => "MLP",
+        "dts" | "dca" => "DTS",
+        "wavpack" => "WavPack",
+        "ape" => "APE",
+        "tta" => "TTA",
+        "tak" => "TAK",
+        "mpc7" | "mpc8" => "MPC",
+        "wmav1" | "wmav2" => "WMA",
+        "wmapro" => "WMA Pro",
+        "wmalossless" => "WMA Lossless",
+        "als" => "MPEG-4 ALS",
+        "shorten" => "Shorten",
+        _ if c.starts_with("pcm") => "PCM",
+        _ if c.starts_with("adpcm") => "ADPCM",
+        _ if c.starts_with("dsd") => "DSD",
+        _ => return codec.to_uppercase(),
+    };
+    s.to_string()
+}
+
+/// Now-playing badge: "FLAC · 24-bit · 96 kHz", "M4A · DD+ · 5.1 · 768 kbps · 48 kHz",
+/// "DSD64 · 2.8 MHz", then where it comes from.
+fn format_badge(info: &player::StreamInfo, t: &Track) -> String {
+    let ext = t.ext.to_ascii_lowercase();
+    let mut codec = codec_label(&info.codec);
+    let khz = |hz: u32| {
+        let k = hz as f64 / 1000.0;
+        if k.fract() == 0.0 {
+            format!("{k:.0} kHz")
+        } else {
+            format!("{k} kHz")
+        }
+    };
+    let mut parts: Vec<String> = Vec::new();
+    // the container too, when it says something the codec doesn't (WAV · PCM, M4A · DD+)
+    let same = matches!(
+        (ext.as_str(), codec.as_str()),
+        ("flac", "FLAC")
+            | ("mp3", "MP3")
+            | ("mp2", "MP2")
+            | ("opus", "Opus")
+            | ("ape", "APE")
+            | ("wv", "WavPack")
+            | ("tta", "TTA")
+            | ("tak", "TAK")
+            | ("mpc", "MPC")
+            | ("aac", "AAC")
+            | ("ac3", "DD")
+            | ("eac3", "DD+")
+            | ("ec3", "DD+")
+            | ("dts", "DTS")
+            | ("thd", "TrueHD")
+            | ("alac", "ALAC")
+            | ("dsf", "DSD")
+            | ("dff", "DSD")
+    ) || (ext == "wma" && codec.starts_with("WMA"));
+    let dsd = codec == "DSD";
+    if dsd {
+        // DSD runs at 64× 44.1 kHz and up; FFmpeg reports an eighth of the bit rate
+        let mult = info.rate as u64 * 8 / 44_100;
+        codec = format!("DSD{mult}");
+    }
+    if !same && !ext.is_empty() {
+        parts.push(ext.to_uppercase());
+    }
+    parts.push(codec);
+    if info.channels > 2 {
+        parts.push(match info.channels {
+            3 => "2.1".into(),
+            6 => "5.1".into(),
+            7 => "6.1".into(),
+            8 => "7.1".into(),
+            n => crate::tr!("{} 聲道", "{} ch", n),
+        });
+    } else if info.channels == 1 {
+        parts.push(crate::tr!("單聲道", "Mono"));
+    }
+    if dsd {
+        parts.push(format!("{:.1} MHz", info.rate as f64 * 8.0 / 1_000_000.0));
+    } else {
+        if let Some(b) = info.bits {
+            parts.push(format!("{b}-bit"));
+        }
+        if info.lossy {
+            let kbps = info.kbps.or_else(|| {
+                // average bit rate from the file size when the decoder doesn't say
+                (t.size > 0 && t.duration_ms > 0)
+                    .then(|| (t.size * 8 / t.duration_ms) as u32)
+            });
+            if let Some(k) = kbps {
+                parts.push(format!("{k} kbps"));
+            }
+        }
+        parts.push(khz(info.rate));
+    }
+    parts.push(match t.source {
+        Source::Local => crate::tr!("本地", "LOCAL"),
+        Source::Server => crate::tr!("伺服器", "SERVER"),
+    });
+    parts.join("  ·  ")
+}
+
 fn apply_accent(p: &Palette, hex: &str) {
     let Some(base) = parse_hex(hex) else { return };
     let scale = |(r, g, b): (u8, u8, u8), f: f32| {
@@ -1977,8 +2284,52 @@ fn install_crash_log() {
     }));
 }
 
+/// Files dropped on a window open in the mini player (a separate process, so the main
+/// player's queue and playback stay as they are).
+fn accept_drops(win: &slint::Window) {
+    use slint::winit_030::winit::event::WindowEvent;
+    use slint::winit_030::{EventResult, WinitWindowAccessor};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let pending: Rc<RefCell<Vec<PathBuf>>> = Rc::default();
+    win.on_winit_window_event(move |_, ev| {
+        if let WindowEvent::DroppedFile(p) = ev {
+            let first = pending.borrow().is_empty();
+            pending.borrow_mut().push(p.clone());
+            if first {
+                // one drop of several files arrives as one event per file
+                let pending = pending.clone();
+                slint::Timer::single_shot(Duration::from_millis(200), move || {
+                    let paths = std::mem::take(&mut *pending.borrow_mut());
+                    open_in_mini(&paths);
+                });
+            }
+        }
+        EventResult::Propagate
+    });
+}
+
+fn open_in_mini(paths: &[PathBuf]) {
+    if paths.is_empty() {
+        return;
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = std::process::Command::new(exe).arg("--mini").args(paths).spawn();
+    }
+}
+
 fn main() -> Result<(), slint::PlatformError> {
     install_crash_log();
+    // "--mini <files>" (double-clicked files) or files given directly: the mini player.
+    let args: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
+    let mini_mode = args.first().is_some_and(|a| a.as_os_str() == "--mini");
+    let files: Vec<PathBuf> = args
+        .into_iter()
+        .filter(|a| a.as_os_str() != "--mini" && !a.as_os_str().to_string_lossy().starts_with("--"))
+        .collect();
+    if mini_mode || !files.is_empty() {
+        return mini::run(files);
+    }
     // Already running (maybe hidden in the tray)? Wake that copy and quit.
     let Some(instance) = single::acquire() else {
         return Ok(());
@@ -1994,6 +2345,7 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.global::<Lang>().set_en(i18n::english());
     pw.global::<Lang>().set_en(i18n::english());
     ui.set_auto_update(cfg.auto_update);
+    ui.set_replaygain_mode(cfg.replaygain as i32);
 
     let player = Player::new(
         |ev| post(move |app| app.on_player_event(ev)),
@@ -2001,6 +2353,7 @@ fn main() -> Result<(), slint::PlatformError> {
         cfg.exclusive,
     );
     player.set_buffer_level(cfg.buffer_level as u32);
+    player.set_replaygain(cfg.replaygain as u32);
     player.set_volume(cfg.volume);
     let discord = discord::Discord::new(cfg.discord_client_id.clone());
 
@@ -2033,6 +2386,10 @@ fn main() -> Result<(), slint::PlatformError> {
             .unwrap_or(0x9e3779b97f4a7c15)
             | 1,
         resume_at: None,
+        preload_dirty: false,
+        info_gen: 0,
+        preload_token: 0,
+        plans: Vec::new(),
         idle_restore: false,
         last_session_save: Instant::now(),
         tray: None,
@@ -2289,6 +2646,17 @@ fn main() -> Result<(), slint::PlatformError> {
         ui.on_output_picked(|i| {
             with_app(|a| a.pick_output(i.max(0) as usize));
         });
+        ui.on_replaygain_picked(|mode| {
+            with_app(|a| {
+                let mode = mode.clamp(0, 2) as u8;
+                a.cfg.replaygain = mode;
+                config::save(&a.cfg);
+                a.player.set_replaygain(mode as u32);
+                if let Some(ui) = a.ui() {
+                    ui.set_replaygain_mode(mode as i32);
+                }
+            });
+        });
         ui.on_language_picked(|en| {
             with_app(|a| a.set_language(en));
         });
@@ -2424,6 +2792,8 @@ fn main() -> Result<(), slint::PlatformError> {
     });
 
     ui.show()?;
+    accept_drops(ui.window());
+    accept_drops(pw.window());
 
     // Windows media controls need the native window handle, which exists once shown.
     let weak = ui.as_weak();

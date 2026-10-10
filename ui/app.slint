@@ -9,6 +9,7 @@ import {
     SectionLabel, WinButton, ResizeBorders, PlayButton, NowPanel, ScrollThumb, Lang } from "common.slint";
 
 export { Palette, LyricLine, Lang } from "common.slint";
+export { MiniWindow, MiniRow } from "mini.slint";
 
 export struct SourceItem {
     label: string,
@@ -114,6 +115,8 @@ export component MainWindow inherits Window {
     callback exclusive-toggled(bool);
     in-out property <int> buffer-level: 1;
     callback buffer-picked(int);
+    in-out property <int> replaygain-mode: 0;
+    callback replaygain-picked(int);
     callback settings-opened();
     changed show-settings => {
         if (root.show-settings) { root.settings-opened(); }
@@ -1018,6 +1021,51 @@ export component MainWindow inherits Window {
                                                         bta := TouchArea {
                                                             mouse-cursor: pointer;
                                                             clicked => { root.buffer-picked(i); }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    HorizontalLayout {
+                                        spacing: 12px;
+                                        VerticalLayout {
+                                            horizontal-stretch: 1;
+                                            spacing: 2px;
+                                            Text { text: Lang.en ? "Volume levelling (ReplayGain)" : "音量平衡（ReplayGain）"; color: Palette.strong; font-weight: 600; }
+                                            Text {
+                                                text: Lang.en ? "Evens out loudness between songs or albums using the ReplayGain tags. Changes the samples, so it is not bit-perfect." : "依 ReplayGain 標籤讓歌曲或專輯之間音量一致；會改變音訊，開啟時不是 bit-perfect。";
+                                                color: Palette.muted;
+                                                font-size: 10px;
+                                                wrap: TextWrap.word-wrap;
+                                            }
+                                        }
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Rectangle {
+                                                width: 186px;
+                                                height: 30px;
+                                                border-radius: 15px;
+                                                background: Palette.bg;
+                                                border-width: 1px;
+                                                border-color: Palette.line;
+                                                HorizontalLayout {
+                                                    padding: 3px;
+                                                    spacing: 2px;
+                                                    for opt[i] in (Lang.en ? ["Off", "Track", "Album"] : ["關閉", "單曲", "專輯"]): Rectangle {
+                                                        border-radius: 12px;
+                                                        background: i == root.replaygain-mode ? Palette.accent : (rgta.has-hover ? Palette.hover : transparent);
+                                                        Text {
+                                                            text: opt;
+                                                            color: i == root.replaygain-mode ? Palette.accent-text : Palette.text;
+                                                            font-size: 11px;
+                                                            font-weight: i == root.replaygain-mode ? 600 : 400;
+                                                            horizontal-alignment: TextHorizontalAlignment.center;
+                                                            vertical-alignment: TextVerticalAlignment.center;
+                                                        }
+                                                        rgta := TouchArea {
+                                                            mouse-cursor: pointer;
+                                                            clicked => { root.replaygain-picked(i); }
                                                         }
                                                     }
                                                 }

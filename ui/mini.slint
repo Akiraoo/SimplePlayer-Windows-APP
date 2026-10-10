@@ -1,0 +1,386 @@
+// Mini player: opened by double-clicking an audio file (or dropping files on Simple Player).
+// Its own small window and play list, separate from the main player; closing it ends it.
+
+import { ListView } from "std-widgets.slint";
+import { Icon } from "icons.slint";
+import {
+    Palette, Lang, LyricLine, Glyph, Slider, Art, PlayButton, WinButton, ResizeBorders, ScrollThumb,
+    PlayingMark } from "common.slint";
+
+export struct MiniRow {
+    title: string,
+    sub: string,
+    time: string,
+    playing: bool,
+}
+
+export component MiniWindow inherits Window {
+    title: (Lang.en ? "Simple Player · Mini" : "Simple Player · 迷你播放器");
+    no-frame: true;
+    always-on-top: root.pinned;
+    preferred-width: 400px;
+    preferred-height: 470px;
+    min-width: 340px;
+    min-height: 218px;
+    background: Palette.surface;
+    default-font-size: 12px;
+    default-font-family: "Segoe UI";
+
+    in-out property <bool> pinned: false;
+    // lower panel shown at all (title bar button) …
+    in-out property <bool> show-list: true;
+    // … and what it shows: false = lyrics, true = the play list
+    in-out property <bool> list-mode: false;
+    in property <[LyricLine]> lyrics;
+    in property <int> active-lyric: -1;
+    callback lyric-clicked(int);
+    callback list-mode-toggled(bool);
+    property <length> lyric-row: 34px;
+    function follow(row-y: length, row-h: length) {
+        lyric-flick.content-y = min(0px, max(lyric-flick.height - lyric-flick.content-height,
+            lyric-flick.height / 2 - (row-y + row-h / 2)));
+    }
+    changed active-lyric => {
+        if (root.active-lyric < 0) { lyric-flick.content-y = 0px; }
+    }
+    in property <string> now-title: (Lang.en ? "Nothing playing" : "尚未播放");
+    in property <string> now-artist;
+    in property <string> now-detail;
+    in property <image> cover-image;
+    in property <bool> has-cover: false;
+    in property <bool> playing: false;
+    in property <float> progress: 0;
+    in property <string> position-text: "0:00";
+    in property <string> duration-text: "0:00";
+    in-out property <float> volume: 0.8;
+    in property <[MiniRow]> rows;
+    in property <string> list-info;
+    in property <string> status;
+    callback toggle-play();
+    callback prev();
+    callback next();
+    callback seek(float);
+    callback seek-by(float);
+    callback volume-changed(float);
+    callback play-row(int);
+    callback pin-toggled(bool);
+    callback list-toggled(bool);
+    callback win-drag();
+    callback win-minimize();
+    callback win-close();
+    callback win-resize(int);
+    public function scroll-to-row(i: int) {
+        mini-list.content-y = min(0px, max(mini-list.visible-height - mini-list.content-height,
+            mini-list.visible-height / 2 - (i + 0.5) * 40px));
+    }
+
+    init => { mkeys.focus(); }
+    mkeys := FocusScope {
+        width: 0px;
+        height: 0px;
+        key-pressed(e) => {
+            if (e.text == " ") { root.toggle-play(); return accept; }
+            if (e.text == Key.LeftArrow) {
+                if (e.modifiers.control) { root.prev(); } else { root.seek-by(-5); }
+                return accept;
+            }
+            if (e.text == Key.RightArrow) {
+                if (e.modifiers.control) { root.next(); } else { root.seek-by(5); }
+                return accept;
+            }
+            if (e.text == Key.Escape) { root.win-close(); return accept; }
+            return reject;
+        }
+    }
+
+    VerticalLayout {
+        // title bar
+        Rectangle {
+            height: 34px;
+            background: Palette.titlebar;
+            TouchArea {
+                moved => {
+                    if (self.pressed) { root.win-drag(); }
+                }
+            }
+            HorizontalLayout {
+                padding-left: 10px;
+                spacing: 4px;
+                VerticalLayout {
+                    alignment: center;
+                    Image { width: 16px; height: 16px; source: @image-url("../assets/icon-small.png"); }
+                }
+                Text {
+                    text: Lang.en ? "Mini player" : "迷你播放器";
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: Palette.text;
+                    vertical-alignment: TextVerticalAlignment.center;
+                }
+                Rectangle { horizontal-stretch: 1; }
+                VerticalLayout {
+                    alignment: center;
+                    Glyph {
+                        size: 26px;
+                        icon-size: 15px;
+                        icon: "list";
+                        active: root.show-list;
+                        clicked => {
+                            root.show-list = !root.show-list;
+                            root.list-toggled(root.show-list);
+                        }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    Glyph {
+                        size: 26px;
+                        icon-size: 15px;
+                        icon: "pin";
+                        active: root.pinned;
+                        clicked => {
+                            root.pinned = !root.pinned;
+                            root.pin-toggled(root.pinned);
+                        }
+                    }
+                }
+                Rectangle { width: 2px; }
+                WinButton { width: 40px; icon: "win-min"; clicked => { root.win-minimize(); } }
+                WinButton { width: 40px; icon: "win-close"; danger: true; clicked => { root.win-close(); } }
+            }
+        }
+
+        // now playing
+        HorizontalLayout {
+            padding: 14px;
+            padding-bottom: 6px;
+            spacing: 12px;
+            Art {
+                width: 84px;
+                height: 84px;
+                radius: 8px;
+                source: root.cover-image;
+                has-image: root.has-cover;
+            }
+            VerticalLayout {
+                alignment: center;
+                spacing: 3px;
+                Text { text: root.now-title; color: Palette.strong; font-size: 15px; font-weight: 700; overflow: TextOverflow.elide; }
+                Text { text: root.now-artist; color: Palette.accent; font-size: 11px; font-weight: 600; overflow: TextOverflow.elide; }
+                Text { text: root.now-detail; color: Palette.muted; font-size: 9px; font-weight: 600; letter-spacing: 0.6px; overflow: TextOverflow.elide; }
+                if root.status != "": Text {
+                    text: root.status;
+                    color: Palette.accent;
+                    font-size: 11px;
+                    overflow: TextOverflow.elide;
+                }
+            }
+        }
+
+        // progress
+        HorizontalLayout {
+            padding-left: 14px;
+            padding-right: 14px;
+            spacing: 8px;
+            height: 24px;
+            Text { width: 36px; text: root.position-text; color: Palette.muted; font-size: 10px; horizontal-alignment: TextHorizontalAlignment.right; vertical-alignment: TextVerticalAlignment.center; }
+            Slider {
+                horizontal-stretch: 1;
+                value: root.progress;
+                committed(v) => { root.seek(v); }
+            }
+            Text { width: 36px; text: root.duration-text; color: Palette.muted; font-size: 10px; vertical-alignment: TextVerticalAlignment.center; }
+        }
+
+        // transport + volume
+        HorizontalLayout {
+            padding-left: 14px;
+            padding-right: 14px;
+            padding-bottom: 10px;
+            spacing: 6px;
+            height: 54px;
+            VerticalLayout { alignment: center; Glyph { icon: "prev"; icon-size: 15px; size: 34px; clicked => { root.prev(); } } }
+            VerticalLayout { alignment: center; PlayButton { size: 42px; playing: root.playing; clicked => { root.toggle-play(); } } }
+            VerticalLayout { alignment: center; Glyph { icon: "next"; icon-size: 15px; size: 34px; clicked => { root.next(); } } }
+            Rectangle { horizontal-stretch: 1; }
+            VerticalLayout {
+                alignment: center;
+                Glyph {
+                    icon: root.volume <= 0 ? "mute" : "volume";
+                    icon-size: 16px;
+                    size: 30px;
+                    clicked => {
+                        root.volume = root.volume <= 0 ? 0.8 : 0;
+                        root.volume-changed(root.volume);
+                    }
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                Slider {
+                    width: 96px;
+                    value: root.volume;
+                    moving(v) => { root.volume = v; root.volume-changed(v); }
+                    committed(v) => { root.volume = v; root.volume-changed(v); }
+                }
+            }
+        }
+
+        // play list
+        if root.show-list: Rectangle { height: 1px; background: Palette.line; }
+        // header: what the panel shows, and the button that opens / closes the play list
+        if root.show-list: HorizontalLayout {
+            height: 32px;
+            padding-left: 16px;
+            padding-right: 10px;
+            spacing: 6px;
+            Text {
+                text: root.list-mode ? (Lang.en ? "PLAY LIST" : "播放清單") : (Lang.en ? "LYRICS" : "歌詞");
+                color: Palette.faint;
+                font-size: 9px;
+                font-weight: 700;
+                letter-spacing: 1px;
+                vertical-alignment: TextVerticalAlignment.center;
+            }
+            Rectangle { horizontal-stretch: 1; }
+            Text { text: root.list-info; color: Palette.faint; font-size: 9px; vertical-alignment: TextVerticalAlignment.center; }
+            VerticalLayout {
+                alignment: center;
+                Glyph {
+                    size: 26px;
+                    icon-size: 15px;
+                    icon: "playlist";
+                    active: root.list-mode;
+                    clicked => {
+                        root.list-mode = !root.list-mode;
+                        root.list-mode-toggled(root.list-mode);
+                    }
+                }
+            }
+        }
+        // lyrics and the play list share the panel (hidden things still take room in a
+        // layout, so they sit on top of each other here)
+        Rectangle {
+            vertical-stretch: 1;
+            visible: root.show-list;
+        lyric-box := Rectangle {
+            visible: !root.list-mode;
+            clip: true;
+            lyric-flick := Flickable {
+                width: lyric-box.width;
+                height: lyric-box.height;
+                content-width: self.width;
+                content-height: lyric-col.preferred-height;
+                animate content-y { duration: 320ms; easing: ease-out; }
+                lyric-col := VerticalLayout {
+                    width: lyric-flick.width;
+                    padding-bottom: 8px;
+                    for l[i] in root.lyrics: Rectangle {
+                        property <bool> active: i == root.active-lyric;
+                        height: max(root.lyric-row, txt.preferred-height + 12px);
+                        changed active => {
+                            if (self.active) { root.follow(self.y, self.height); }
+                        }
+                        txt := Text {
+                            x: 18px;
+                            y: (parent.height - self.height) / 2;
+                            width: parent.width - 36px;
+                            height: self.preferred-height;
+                            text: l.text;
+                            wrap: TextWrap.word-wrap;
+                            color: i == root.active-lyric ? Palette.strong
+                                : (lta.has-hover && l.timed ? Palette.text : Palette.faint);
+                            font-size: i == root.active-lyric ? 14px : 12px;
+                            font-weight: i == root.active-lyric ? 700 : 400;
+                            vertical-alignment: TextVerticalAlignment.center;
+                            animate color { duration: 200ms; }
+                        }
+                        if i == root.active-lyric: Rectangle {
+                            x: 8px;
+                            y: 9px;
+                            width: 3px;
+                            height: parent.height - 18px;
+                            border-radius: 1.5px;
+                            background: Palette.accent;
+                        }
+                        lta := TouchArea {
+                            mouse-cursor: l.timed ? MouseCursor.pointer : MouseCursor.default;
+                            clicked => {
+                                if (l.timed) { root.lyric-clicked(i); }
+                            }
+                        }
+                    }
+                }
+            }
+            if root.lyrics.length == 0: Text {
+                y: 16px;
+                width: parent.width;
+                text: Lang.en ? "No lyrics" : "沒有可顯示的歌詞";
+                color: Palette.faint;
+                font-size: 11px;
+                horizontal-alignment: TextHorizontalAlignment.center;
+            }
+        }
+        // play list
+        Rectangle {
+            visible: root.list-mode;
+            mini-list := ListView {
+                vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+                for row[i] in root.rows: Rectangle {
+                    height: 40px;
+                    Rectangle {
+                        x: 8px;
+                        width: parent.width - 16px;
+                        y: 2px;
+                        height: parent.height - 4px;
+                        border-radius: 8px;
+                        background: row.playing ? Palette.accent-soft : (rta.has-hover ? Palette.hover : transparent);
+                    }
+                    HorizontalLayout {
+                        padding-left: 16px;
+                        padding-right: 18px;
+                        spacing: 10px;
+                        Rectangle {
+                            width: 22px;
+                            if row.playing: PlayingMark { x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+                            if !row.playing: Text {
+                                width: parent.width;
+                                height: parent.height;
+                                text: i + 1;
+                                color: Palette.faint;
+                                font-size: 10px;
+                                horizontal-alignment: TextHorizontalAlignment.center;
+                                vertical-alignment: TextVerticalAlignment.center;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            horizontal-stretch: 1;
+                            Text { text: row.title; color: row.playing ? Palette.accent : Palette.text; font-size: 12px; font-weight: row.playing ? 600 : 400; overflow: TextOverflow.elide; }
+                            if row.sub != "": Text { text: row.sub; color: Palette.faint; font-size: 10px; overflow: TextOverflow.elide; }
+                        }
+                        Text { text: row.time; color: Palette.faint; font-size: 10px; vertical-alignment: TextVerticalAlignment.center; }
+                    }
+                    rta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.play-row(i); }
+                    }
+                }
+            }
+            ScrollThumb {
+                x: parent.width - self.width;
+                height: parent.height;
+                content-h: mini-list.content-height;
+                view-h: mini-list.visible-height;
+                content-y <=> mini-list.content-y;
+            }
+        }
+        }
+    }
+
+    ResizeBorders {
+        width: parent.width;
+        height: parent.height;
+        resize(d) => { root.win-resize(d); }
+    }
+}

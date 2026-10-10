@@ -13,8 +13,12 @@ use walkdir::WalkDir;
 
 use crate::config;
 
+/// Symphonia reads most of these; the rest (Opus, APE, WavPack, DSD, WMA, Dolby, DTS…)
+/// play through FFmpeg when it is available.
 const AUDIO_EXTS: &[&str] = &[
-    "mp3", "flac", "m4a", "aac", "ogg", "oga", "opus", "wav", "webm", "alac", "aiff", "aif",
+    "mp3", "mp2", "flac", "m4a", "m4b", "aac", "alac", "ogg", "oga", "opus", "wav", "w64",
+    "webm", "mka", "aiff", "aif", "aifc", "caf", "ape", "wv", "tta", "mpc", "dsf", "dff", "wma",
+    "ac3", "eac3", "ec3", "dts", "thd", "mlp",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,6 +148,19 @@ fn folder_name(path: &Path, root: &Path) -> String {
 }
 
 fn read_local(path: &Path, root: &Path, ext: &str, size: u64, mtime: u64, key: String) -> Track {
+    read_local_full(path, root, ext, size, mtime, key).0
+}
+
+/// Like `read_local`, plus (disc, track number) from the tags (0 when missing).
+fn read_local_full(
+    path: &Path,
+    root: &Path,
+    ext: &str,
+    size: u64,
+    mtime: u64,
+    key: String,
+) -> (Track, u32, u32) {
+    let mut numbers = (0u32, 0u32);
     let stem = path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -179,10 +196,73 @@ fn read_local(path: &Path, root: &Path, ext: &str, size: u64, mtime: u64, key: S
             if let Some(v) = tag.album() {
                 t.album = v.to_string();
             }
+            numbers = (tag.disk().unwrap_or(0), tag.track().unwrap_or(0));
         }
         t.has_cover = tagged.tags().iter().any(|tag| !tag.pictures().is_empty());
     }
-    t
+    (t, numbers.0, numbers.1)
+}
+
+/// File extension (lower case) when it is an audio file we play.
+pub fn audio_ext(path: &Path) -> Option<String> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    AUDIO_EXTS.contains(&ext.as_str()).then_some(ext)
+}
+
+/// A single file outside the library (mini player). Returns (track, disc, track number).
+pub fn track_from_path(path: &Path) -> Option<(Track, u32, u32)> {
+    let meta = fs::metadata(path).ok()?;
+    if !meta.is_file() {
+        return None;
+    }
+    let ext = audio_ext(path)?;
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let key = format!("local:{}", path.display());
+    let root = path.parent().unwrap_or(path);
+    Some(read_local_full(path, root, &ext, meta.len(), mtime, key))
+}
+
+/// "2 song" < "10 song": compares runs of digits by value, the rest case-insensitively.
+pub fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let (mut x, mut y) = (a.chars().peekable(), b.chars().peekable());
+    loop {
+        match (x.peek().copied(), y.peek().copied()) {
+            (None, None) => return Ordering::Equal,
+            (None, _) => return Ordering::Less,
+            (_, None) => return Ordering::Greater,
+            (Some(c), Some(d)) if c.is_ascii_digit() && d.is_ascii_digit() => {
+                let mut n1 = String::new();
+                while let Some(c) = x.peek().copied().filter(|c| c.is_ascii_digit()) {
+                    n1.push(c);
+                    x.next();
+                }
+                let mut n2 = String::new();
+                while let Some(d) = y.peek().copied().filter(|c| c.is_ascii_digit()) {
+                    n2.push(d);
+                    y.next();
+                }
+                let (t1, t2) = (n1.trim_start_matches('0'), n2.trim_start_matches('0'));
+                let o = t1.len().cmp(&t2.len()).then(t1.cmp(t2));
+                if o != Ordering::Equal {
+                    return o;
+                }
+            }
+            (Some(c), Some(d)) => {
+                let o = c.to_lowercase().cmp(d.to_lowercase());
+                if o != Ordering::Equal {
+                    return o;
+                }
+                x.next();
+                y.next();
+            }
+        }
+    }
 }
 
 /// Writes the embedded cover of a local file to the cache and returns its path.

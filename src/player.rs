@@ -1,6 +1,6 @@
-//! Audio engine: Symphonia decodes on a worker thread, a small ring buffer feeds the
-//! cpal output callback. Sample-rate conversion is linear (good enough for v0.1;
-//! a proper resampler / WASAPI exclusive mode can come later).
+//! Audio engine: Symphonia (or FFmpeg, for formats Symphonia can't read) decodes on a
+//! worker thread into a buffer that the output (cpal shared mode, or WASAPI exclusive)
+//! drains. The next song can be handed over early, so it follows without a gap.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -27,25 +27,45 @@ use symphonia::core::units::Time;
 pub const BUFFER_LEVELS: [(f32, u32); 3] = [(0.6, 40), (2.0, 40), (4.0, 40)];
 
 pub enum PlayerEvent {
-    /// The current track played to the end.
+    /// The current track played to the end (and nothing was preloaded after it).
     Ended,
+    /// Playback moved on to the preloaded track with this token, without a gap.
+    Advanced(u64),
     /// The track could not be opened or decoded.
     Error(String),
 }
 
 pub type Opener = Box<dyn FnOnce() -> Result<Box<dyn MediaSource>, String> + Send>;
 
+/// A song to play.
+pub struct Item {
+    /// Opens the bytes for Symphonia (file or HTTP stream).
+    pub open: Opener,
+    /// File extension, a hint for the format.
+    pub ext: Option<String>,
+    /// Where FFmpeg can read the song when Symphonia can't decode it.
+    pub alt: Option<crate::ffdec::Input>,
+    /// Length from the library (used when the decoder can't tell), seconds.
+    pub duration_hint: f64,
+}
+
+/// What the song itself is (for the now-playing badge): codec and format as stored.
+#[derive(Clone, Debug, Default)]
+pub struct StreamInfo {
+    /// decoder name, e.g. "flac", "eac3", "pcm_s16le", "dsd_lsbf_planar"
+    pub codec: String,
+    pub lossy: bool,
+    /// bit depth of the stored samples (None for lossy / float formats)
+    pub bits: Option<u32>,
+    pub rate: u32,
+    pub channels: u32,
+    pub kbps: Option<u32>,
+}
+
 enum Cmd {
-    Load {
-        src: Box<dyn MediaSource>,
-        ext: Option<String>,
-        start_paused: bool,
-    },
-    Open {
-        open: Opener,
-        ext: Option<String>,
-        start_paused: bool,
-    },
+    Open { item: Item, start_paused: bool },
+    /// The song to continue with when the current one ends (replaces an earlier one).
+    Next { token: u64, item: Item },
     Seek(f64),
     Stop,
 }
@@ -74,6 +94,13 @@ struct Shared {
     /// What the output was opened as ("獨佔 · 44.1 kHz · 16-bit" / "共享 · 48 kHz"), written by
     /// the output thread so the UI can read it without asking that thread anything.
     desc: Mutex<String>,
+    /// ReplayGain: 0 off, 1 track, 2 album.
+    rg_mode: AtomicU32,
+    /// The current samples are scaled by ReplayGain (so not bit-perfect).
+    rg_active: AtomicBool,
+    /// The song being heard; `info_gen` changes whenever it does.
+    info: Mutex<Option<StreamInfo>>,
+    info_gen: AtomicU64,
 }
 
 /// Commands for the audio-out thread (it owns the cpal stream).
@@ -117,6 +144,10 @@ impl Player {
             buffer_level: AtomicU32::new(1),
             late: AtomicU64::new(0),
             desc: Mutex::new(String::new()),
+            rg_mode: AtomicU32::new(0),
+            rg_active: AtomicBool::new(false),
+            info: Mutex::new(None),
+            info_gen: AtomicU64::new(0),
         });
 
         // The output stream lives on its own thread: WASAPI wants a COM apartment that
@@ -145,12 +176,19 @@ impl Player {
     }
 
     /// Opens the source on the decoder thread (e.g. an HTTP stream), then plays it.
-    pub fn open(&self, open: Opener, ext: Option<String>, start_paused: bool) {
-        let _ = self.tx.send(Cmd::Open {
-            open,
-            ext,
-            start_paused,
-        });
+    pub fn open(&self, item: Item, start_paused: bool) {
+        let _ = self.tx.send(Cmd::Open { item, start_paused });
+    }
+
+    /// The song after the current one: it is opened shortly before the current one ends and
+    /// follows without a gap; `PlayerEvent::Advanced(token)` reports the switch.
+    pub fn preload(&self, token: u64, item: Item) {
+        let _ = self.tx.send(Cmd::Next { token, item });
+    }
+
+    /// ReplayGain mode: 0 off, 1 track, 2 album. Applies from the next decoded block.
+    pub fn set_replaygain(&self, mode: u32) {
+        self.shared.rg_mode.store(mode.min(2), Ordering::Relaxed);
     }
 
     pub fn play(&self) {
@@ -296,6 +334,12 @@ impl Player {
             ));
         }
         s
+    }
+
+    /// The song being heard and a counter that changes with it (cheap to poll).
+    pub fn stream_info(&self) -> (u64, Option<StreamInfo>) {
+        let g = self.shared.info_gen.load(Ordering::Relaxed);
+        (g, self.shared.info.lock().ok().and_then(|i| i.clone()))
     }
 
     /// Track length in seconds (0 when unknown).
@@ -522,7 +566,8 @@ impl Output {
         let shared = self.shared.clone();
         let res = match self.excl.as_mut() {
             Some(x) => {
-                x.unity = f32::from_bits(shared.volume.load(Ordering::Relaxed)) >= 1.0;
+                x.unity = f32::from_bits(shared.volume.load(Ordering::Relaxed)) >= 1.0
+                    && !shared.rg_active.load(Ordering::Relaxed);
                 let before = x.late;
                 let r = x.pump(|buf| fill(&shared, buf, 2, |v| v));
                 if x.late != before {
@@ -657,27 +702,146 @@ fn fill<T: Copy>(shared: &Shared, out: &mut [T], channels: usize, conv: impl Fn(
 
 /* ---------------- decoder ---------------- */
 
+/// Where the samples of one song come from.
+enum Source {
+    Sym {
+        format: Box<dyn FormatReader>,
+        decoder: Box<dyn Decoder>,
+        track_id: u32,
+    },
+    Ff(crate::ffdec::FfSource),
+}
+
 struct Track {
-    format: Box<dyn FormatReader>,
-    decoder: Box<dyn Decoder>,
-    track_id: u32,
+    src: Source,
     resampler: Resampler,
     src_rate: u32,
     out_rate: u32,
     bits: u32,
+    duration: f64,
+    gains: Gains,
+    info: StreamInfo,
 }
 
-fn open_track(
+fn publish_info(shared: &Shared, info: Option<StreamInfo>) {
+    if let Ok(mut i) = shared.info.lock() {
+        *i = info;
+    }
+    shared.info_gen.fetch_add(1, Ordering::Relaxed);
+}
+
+impl Track {
+    /// Next block of stereo samples at the source rate; None = the song is over.
+    fn next_block(&mut self) -> Option<Vec<f32>> {
+        match &mut self.src {
+            Source::Ff(f) => f.next(),
+            Source::Sym {
+                format,
+                decoder,
+                track_id,
+            } => loop {
+                let packet = match format.next_packet() {
+                    Ok(p) => p,
+                    Err(SymError::IoError(e))
+                        if e.kind() == std::io::ErrorKind::UnexpectedEof =>
+                    {
+                        return None
+                    }
+                    Err(SymError::ResetRequired) => {
+                        decoder.reset();
+                        continue;
+                    }
+                    Err(e) => {
+                        eprintln!("read error: {e}");
+                        return None;
+                    }
+                };
+                if packet.track_id() != *track_id {
+                    continue;
+                }
+                let decoded = match decoder.decode(&packet) {
+                    Ok(d) => d,
+                    Err(SymError::DecodeError(_)) => continue, // skip a corrupt packet
+                    Err(e) => {
+                        eprintln!("decode error: {e}");
+                        return None;
+                    }
+                };
+                let spec = *decoded.spec();
+                let channels = spec.channels.count().max(1);
+                let mut sb = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
+                sb.copy_interleaved_ref(decoded);
+                return Some(to_stereo(sb.samples(), channels));
+            },
+        }
+    }
+
+    fn seek(&mut self, secs: f64) -> bool {
+        let ok = match &mut self.src {
+            Source::Ff(f) => f.seek(secs),
+            Source::Sym {
+                format,
+                decoder,
+                track_id,
+            } => {
+                let to = Time::new(secs.trunc() as u64, secs.fract());
+                let ok = format
+                    .seek(
+                        SeekMode::Accurate,
+                        SeekTo::Time {
+                            time: to,
+                            track_id: Some(*track_id),
+                        },
+                    )
+                    .is_ok();
+                if ok {
+                    decoder.reset();
+                }
+                ok
+            }
+        };
+        if ok {
+            self.resampler.reset();
+        }
+        ok
+    }
+
+    fn set_out_rate(&mut self, rate: u32) {
+        if rate != self.out_rate {
+            self.resampler = Resampler::new(self.src_rate, rate);
+            self.out_rate = rate;
+        }
+    }
+}
+
+use crate::ffdec::Gains;
+
+fn read_gains(g: &mut Gains, tags: &[symphonia::core::meta::Tag]) {
+    use symphonia::core::meta::StandardTagKey as K;
+    for t in tags {
+        let value = t.value.to_string();
+        let key = match t.std_key {
+            Some(K::ReplayGainTrackGain) => "REPLAYGAIN_TRACK_GAIN",
+            Some(K::ReplayGainTrackPeak) => "REPLAYGAIN_TRACK_PEAK",
+            Some(K::ReplayGainAlbumGain) => "REPLAYGAIN_ALBUM_GAIN",
+            Some(K::ReplayGainAlbumPeak) => "REPLAYGAIN_ALBUM_PEAK",
+            // ID3 user text frames come as "TXXX:replaygain_track_gain"
+            _ => t.key.rsplit(':').next().unwrap_or(&t.key),
+        };
+        g.read(key, &value);
+    }
+}
+
+fn open_symphonia(
     src: Box<dyn MediaSource>,
     ext: Option<&str>,
-    out_rate: u32,
-) -> Result<(Track, f64), String> {
+) -> Result<(Source, u32, u32, f64, Gains, StreamInfo), String> {
     let mss = MediaSourceStream::new(src, Default::default());
     let mut hint = Hint::new();
     if let Some(e) = ext {
         hint.with_extension(e.trim_start_matches('.'));
     }
-    let probed = symphonia::default::get_probe()
+    let mut probed = symphonia::default::get_probe()
         .format(
             &hint,
             mss,
@@ -688,14 +852,24 @@ fn open_track(
             &MetadataOptions::default(),
         )
         .map_err(|e| crate::tr!("無法辨識音訊格式：{}", "Unrecognised audio format: {}", e))?;
-    let format = probed.format;
-    let track = format
-        .tracks()
-        .iter()
-        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-        .ok_or_else(|| crate::tr!("找不到音軌", "No audio track found"))?;
-    let track_id = track.id;
-    let params = track.codec_params.clone();
+    let mut gains = Gains::default();
+    if let Some(m) = probed.metadata.get() {
+        if let Some(rev) = m.current() {
+            read_gains(&mut gains, rev.tags());
+        }
+    }
+    let mut format = probed.format;
+    if let Some(rev) = format.metadata().current() {
+        read_gains(&mut gains, rev.tags());
+    }
+    let (track_id, params) = {
+        let track = format
+            .tracks()
+            .iter()
+            .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+            .ok_or_else(|| crate::tr!("找不到音軌", "No audio track found"))?;
+        (track.id, track.codec_params.clone())
+    };
     let decoder = symphonia::default::get_codecs()
         .make(&params, &DecoderOptions::default())
         .map_err(|e| crate::tr!("不支援的編碼：{}", "Unsupported codec: {}", e))?;
@@ -708,27 +882,112 @@ fn open_track(
         (Some(n), None) => n as f64 / src_rate as f64,
         _ => 0.0,
     };
+    let bits = params.bits_per_sample.unwrap_or(16);
+    let codec = symphonia::default::get_codecs()
+        .get_codec(params.codec)
+        .map(|d| d.short_name.to_string())
+        .unwrap_or_default();
+    let lossy = matches!(codec.as_str(), "mp1" | "mp2" | "mp3" | "aac" | "vorbis" | "opus");
+    let info = StreamInfo {
+        lossy,
+        bits: if lossy { None } else { params.bits_per_sample },
+        rate: src_rate,
+        channels: params.channels.map(|c| c.count() as u32).unwrap_or(2),
+        kbps: None,
+        codec,
+    };
     Ok((
-        Track {
+        Source::Sym {
             format,
             decoder,
             track_id,
-            resampler: Resampler::new(src_rate, out_rate),
-            src_rate,
-            out_rate,
-            bits: params.bits_per_sample.unwrap_or(16),
         },
+        src_rate,
+        bits,
         duration,
+        gains,
+        info,
     ))
 }
 
-fn decoder_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, on_event: impl Fn(PlayerEvent)) {
-    let mut cur: Option<Track> = None;
-    let mut ended_sent = false;
+/// Opens a song: Symphonia first, FFmpeg when Symphonia can't read the format.
+fn open_item(item: Item, out_rate: u32) -> Result<Track, String> {
+    let Item {
+        open,
+        ext,
+        alt,
+        duration_hint,
+    } = item;
+    let bytes = open()?;
+    let (src, src_rate, bits, duration, gains, info) = match open_symphonia(bytes, ext.as_deref()) {
+        Ok(x) => x,
+        Err(e) => match alt {
+            Some(input) => {
+                let f = crate::ffdec::FfSource::open(input)?;
+                let i = &f.info;
+                let info = StreamInfo {
+                    codec: i.codec.clone(),
+                    lossy: i.lossy,
+                    bits: if i.lossy { None } else { i.src_bits },
+                    rate: i.rate,
+                    channels: i.channels.max(1),
+                    kbps: i.kbps,
+                };
+                let (rate, bits, dur, gains) = (f.rate, i.bits, i.duration, i.gains);
+                (Source::Ff(f), rate, bits, dur, gains, info)
+            }
+            None => return Err(e),
+        },
+    };
+    Ok(Track {
+        src,
+        resampler: Resampler::new(src_rate, out_rate),
+        src_rate,
+        out_rate,
+        bits,
+        duration: if duration > 0.0 { duration } else { duration_hint },
+        gains,
+        info,
+    })
+}
 
+/// The song to continue with.
+enum NextSong {
+    Waiting(Item),
+    /// Already opened (taken back after a seek during the handover).
+    Ready(Track),
+}
+
+struct Next {
+    token: u64,
+    song: NextSong,
+}
+
+/// The next song is being decoded behind the current one; playback reaches it after `at`
+/// output frames (counted like `Shared::played`).
+struct Handover {
+    token: u64,
+    at: u64,
+    /// The song still playing out (restored if the user seeks in it).
+    prev: Track,
+    /// Exclusive mode at another sample rate: let the old song finish, re-open the device,
+    /// then start the new one (a short pause is unavoidable there).
+    reopen: bool,
+}
+
+#[derive(Default)]
+struct State {
+    cur: Option<Track>,
+    next: Option<Next>,
+    hand: Option<Handover>,
+    ended_sent: bool,
+}
+
+fn decoder_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, on_event: impl Fn(PlayerEvent)) {
+    let mut st = State::default();
     loop {
-        // Wait for a command when idle; otherwise just peek between packets.
-        let cmd = if cur.is_none() {
+        // Wait for a command when idle; otherwise just peek between blocks.
+        let cmd = if st.cur.is_none() {
             match rx.recv() {
                 Ok(c) => Some(c),
                 Err(_) => return,
@@ -740,178 +999,221 @@ fn decoder_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, on_event: impl Fn(Play
                 Err(mpsc::TryRecvError::Disconnected) => return,
             }
         };
-
         if let Some(cmd) = cmd {
-            handle(&shared, cmd, &mut cur, &on_event, &mut ended_sent);
+            handle(&shared, cmd, &mut st, &on_event);
             continue;
         }
 
-        // Finished decoding: wait for the output to drain, then report the end.
+        // Has playback reached the song that was handed over?
+        let hand = st
+            .hand
+            .as_ref()
+            .map(|h| (shared.played.load(Ordering::Relaxed) >= h.at, h.reopen));
+        if let Some((reached, reopen)) = hand {
+            if reached {
+                finish_handover(&shared, &mut st, &on_event);
+                continue;
+            }
+            if reopen {
+                // the old song is playing out before the device switches rate
+                thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+        }
+
+        // Current song fully decoded: hand over to the next one, or wait for the end.
         if shared.decoding_done.load(Ordering::Relaxed) {
+            if st.hand.is_none() && !st.ended_sent && st.next.is_some() && st.cur.is_some() {
+                start_handover(&shared, &mut st);
+                continue;
+            }
             let empty = shared.queue.lock().map(|q| q.len() < 2).unwrap_or(true);
-            if empty && !ended_sent {
-                ended_sent = true;
+            if empty && !st.ended_sent {
+                st.ended_sent = true;
                 on_event(PlayerEvent::Ended);
             }
             match rx.recv_timeout(Duration::from_millis(50)) {
-                Ok(c) => handle(&shared, c, &mut cur, &on_event, &mut ended_sent),
+                Ok(c) => handle(&shared, c, &mut st, &on_event),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
             }
             continue;
         }
 
-        let Some(t) = cur.as_mut() else { continue };
+        let Some(t) = st.cur.as_mut() else { continue };
 
         // Keep the buffer topped up.
-        let out_rate = shared.out_rate.load(Ordering::Relaxed) as f32;
+        let out_rate = shared.out_rate.load(Ordering::Relaxed);
         let level = (shared.buffer_level.load(Ordering::Relaxed) as usize).min(2);
-        let limit = (out_rate * BUFFER_LEVELS[level].0) as usize * 2;
+        let limit = (out_rate as f32 * BUFFER_LEVELS[level].0) as usize * 2;
         if shared.queue.lock().map(|q| q.len()).unwrap_or(0) >= limit {
             thread::sleep(Duration::from_millis(10));
             continue;
         }
 
-        let packet = match t.format.next_packet() {
-            Ok(p) => p,
-            Err(SymError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                shared.decoding_done.store(true, Ordering::Relaxed);
-                continue;
+        let Some(mut block) = t.next_block() else {
+            let tail = t.resampler.flush();
+            if let Ok(mut q) = shared.queue.lock() {
+                q.extend(tail);
             }
-            Err(SymError::ResetRequired) => {
-                t.decoder.reset();
-                continue;
-            }
-            Err(e) => {
-                shared.decoding_done.store(true, Ordering::Relaxed);
-                eprintln!("read error: {e}");
-                continue;
-            }
-        };
-        if packet.track_id() != t.track_id {
+            shared.decoding_done.store(true, Ordering::Relaxed);
             continue;
-        }
-        let decoded = match t.decoder.decode(&packet) {
-            Ok(d) => d,
-            Err(SymError::DecodeError(_)) => continue, // skip a corrupt packet
-            Err(e) => {
-                eprintln!("decode error: {e}");
-                shared.decoding_done.store(true, Ordering::Relaxed);
-                continue;
-            }
         };
-        let spec = *decoded.spec();
-        let channels = spec.channels.count().max(1);
-        let mut sb = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
-        sb.copy_interleaved_ref(decoded);
-        let stereo = to_stereo(sb.samples(), channels);
-        // the output device may have changed (other sample rate)
-        let now_rate = shared.out_rate.load(Ordering::Relaxed);
-        if now_rate != t.out_rate {
-            t.resampler = Resampler::new(t.src_rate, now_rate);
-            t.out_rate = now_rate;
+        let gain = t.gains.factor(shared.rg_mode.load(Ordering::Relaxed));
+        shared.rg_active.store(gain != 1.0, Ordering::Relaxed);
+        if gain != 1.0 {
+            for s in block.iter_mut() {
+                *s *= gain;
+            }
         }
-        let out = t.resampler.process(&stereo);
+        // the output device may have changed (other sample rate)
+        t.set_out_rate(out_rate);
+        let out = t.resampler.process(&block);
         if let Ok(mut q) = shared.queue.lock() {
             q.extend(out);
         }
     }
 }
 
-fn handle(
-    shared: &Arc<Shared>,
-    cmd: Cmd,
-    cur: &mut Option<Track>,
-    on_event: &impl Fn(PlayerEvent),
-    ended_sent: &mut bool,
-) {
-    let cmd = match cmd {
-        Cmd::Open {
-            open,
-            ext,
-            start_paused,
-        } => {
-            shared.paused.store(true, Ordering::Relaxed);
-            clear(shared, 0);
-            *cur = None;
-            match open() {
-                Ok(src) => Cmd::Load {
-                    src,
-                    ext,
-                    start_paused,
-                },
-                Err(e) => {
-                    shared.active.store(false, Ordering::Relaxed);
-                    on_event(PlayerEvent::Error(e));
-                    return;
-                }
-            }
-        }
-        other => other,
+/// Opens the next song and starts decoding it right behind the current one.
+fn start_handover(shared: &Shared, st: &mut State) {
+    let Some(Next { token, song }) = st.next.take() else {
+        return;
     };
+    let out_rate = shared.out_rate.load(Ordering::Relaxed);
+    let mut nt = match song {
+        NextSong::Ready(t) => t,
+        NextSong::Waiting(item) => match open_item(item, out_rate) {
+            Ok(t) => t,
+            Err(e) => {
+                // let the current song end normally; the app then tries it the usual way
+                eprintln!("preload failed: {e}");
+                return;
+            }
+        },
+    };
+    let queued = shared.queue.lock().map(|q| q.len() / 2).unwrap_or(0) as u64;
+    let at = shared.played.load(Ordering::Relaxed) + queued;
+    let reopen = shared.exclusive.load(Ordering::Relaxed)
+        && nt.src_rate != shared.want_rate.load(Ordering::Relaxed);
+    if !reopen {
+        nt.set_out_rate(out_rate);
+        shared.decoding_done.store(false, Ordering::Relaxed);
+    }
+    let Some(prev) = st.cur.replace(nt) else {
+        return;
+    };
+    st.hand = Some(Handover {
+        token,
+        at,
+        prev,
+        reopen,
+    });
+}
+
+/// Playback has reached the handed-over song: it becomes the current one.
+fn finish_handover(shared: &Shared, st: &mut State, on_event: &impl Fn(PlayerEvent)) {
+    let Some(h) = st.hand.take() else { return };
+    drop(h.prev);
+    let Some(t) = st.cur.as_mut() else { return };
+    if h.reopen {
+        clear(shared, 0);
+        shared.want_bits.store(t.bits, Ordering::Relaxed);
+        shared.want_rate.store(t.src_rate, Ordering::Relaxed);
+        wait_exclusive(shared, t.src_rate);
+        t.set_out_rate(shared.out_rate.load(Ordering::Relaxed));
+        shared.decoding_done.store(false, Ordering::Relaxed);
+    } else {
+        // keep counting from where the new song starts
+        let played = shared.played.load(Ordering::Relaxed);
+        shared
+            .played
+            .fetch_sub(played.min(h.at), Ordering::Relaxed);
+        shared.base_ms.store(0, Ordering::Relaxed);
+        shared.want_bits.store(t.bits, Ordering::Relaxed);
+        shared.want_rate.store(t.src_rate, Ordering::Relaxed);
+    }
+    shared
+        .duration_ms
+        .store((t.duration * 1000.0) as u64, Ordering::Relaxed);
+    publish_info(shared, Some(t.info.clone()));
+    st.ended_sent = false;
+    on_event(PlayerEvent::Advanced(h.token));
+}
+
+/// Exclusive mode: give the output a moment to re-open the device at `rate`.
+fn wait_exclusive(shared: &Shared, rate: u32) {
+    if !shared.exclusive.load(Ordering::Relaxed) {
+        return;
+    }
+    let until = std::time::Instant::now() + Duration::from_millis(1500);
+    while shared.excl_ack.load(Ordering::Relaxed) != rate
+        && shared.exclusive.load(Ordering::Relaxed)
+        && std::time::Instant::now() < until
+    {
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn handle(shared: &Arc<Shared>, cmd: Cmd, st: &mut State, on_event: &impl Fn(PlayerEvent)) {
     match cmd {
-        Cmd::Open { .. } => {}
-        Cmd::Load {
-            src,
-            ext,
-            start_paused,
-        } => {
+        Cmd::Open { item, start_paused } => {
             shared.paused.store(true, Ordering::Relaxed);
             clear(shared, 0);
-            *cur = None;
+            st.cur = None;
+            st.next = None;
+            st.hand = None;
             let out_rate = shared.out_rate.load(Ordering::Relaxed);
-            match open_track(src, ext.as_deref(), out_rate) {
-                Ok((mut t, dur)) => {
+            match open_item(item, out_rate) {
+                Ok(mut t) => {
                     shared.want_bits.store(t.bits, Ordering::Relaxed);
                     shared.want_rate.store(t.src_rate, Ordering::Relaxed);
-                    if shared.exclusive.load(Ordering::Relaxed) {
-                        // let the exclusive output switch to this song's rate first
-                        let until = std::time::Instant::now() + Duration::from_millis(1500);
-                        while shared.excl_ack.load(Ordering::Relaxed) != t.src_rate
-                            && shared.exclusive.load(Ordering::Relaxed)
-                            && std::time::Instant::now() < until
-                        {
-                            thread::sleep(Duration::from_millis(10));
-                        }
-                    }
-                    let now_rate = shared.out_rate.load(Ordering::Relaxed);
-                    if now_rate != t.out_rate {
-                        t.resampler = Resampler::new(t.src_rate, now_rate);
-                        t.out_rate = now_rate;
-                    }
+                    // let the exclusive output switch to this song's rate first
+                    wait_exclusive(shared, t.src_rate);
+                    t.set_out_rate(shared.out_rate.load(Ordering::Relaxed));
                     shared
                         .duration_ms
-                        .store((dur * 1000.0) as u64, Ordering::Relaxed);
+                        .store((t.duration * 1000.0) as u64, Ordering::Relaxed);
                     shared.active.store(true, Ordering::Relaxed);
                     shared.decoding_done.store(false, Ordering::Relaxed);
                     shared.paused.store(start_paused, Ordering::Relaxed);
-                    *ended_sent = false;
-                    *cur = Some(t);
+                    st.ended_sent = false;
+                    publish_info(shared, Some(t.info.clone()));
+                    st.cur = Some(t);
                 }
                 Err(e) => {
                     shared.active.store(false, Ordering::Relaxed);
+                    publish_info(shared, None);
                     on_event(PlayerEvent::Error(e));
                 }
             }
         }
+        Cmd::Next { token, item } => {
+            // once the handover has begun, that song stays the next one
+            if st.hand.is_none() {
+                st.next = Some(Next {
+                    token,
+                    song: NextSong::Waiting(item),
+                });
+            }
+        }
         Cmd::Seek(secs) => {
-            if let Some(t) = cur.as_mut() {
-                let to = Time::new(secs.trunc() as u64, secs.fract());
-                if t.format
-                    .seek(
-                        SeekMode::Accurate,
-                        SeekTo::Time {
-                            time: to,
-                            track_id: Some(t.track_id),
-                        },
-                    )
-                    .is_ok()
-                {
-                    t.decoder.reset();
-                    t.resampler.reset();
+            if let Some(h) = st.hand.take() {
+                // still in the old song: take it back, keep the new one ready for later
+                if let Some(mut upcoming) = st.cur.replace(h.prev) {
+                    if upcoming.seek(0.0) {
+                        st.next = Some(Next {
+                            token: h.token,
+                            song: NextSong::Ready(upcoming),
+                        });
+                    }
+                }
+            }
+            if let Some(t) = st.cur.as_mut() {
+                if t.seek(secs) {
                     clear(shared, (secs * 1000.0) as u64);
                     shared.decoding_done.store(false, Ordering::Relaxed);
-                    *ended_sent = false;
+                    st.ended_sent = false;
                 }
             }
         }
@@ -920,7 +1222,10 @@ fn handle(
             shared.active.store(false, Ordering::Relaxed);
             clear(shared, 0);
             shared.duration_ms.store(0, Ordering::Relaxed);
-            *cur = None;
+            publish_info(shared, None);
+            st.cur = None;
+            st.next = None;
+            st.hand = None;
         }
     }
 }
@@ -933,14 +1238,32 @@ fn clear(shared: &Shared, base_ms: u64) {
     shared.base_ms.store(base_ms, Ordering::Relaxed);
 }
 
+/// Interleaved samples of any channel count → stereo. 5.1 / 7.1 use the usual downmix
+/// (centre and surrounds at -3 dB, LFE left out), scaled so it can't clip.
 fn to_stereo(samples: &[f32], channels: usize) -> Vec<f32> {
+    const H: f32 = std::f32::consts::FRAC_1_SQRT_2;
     match channels {
         1 => samples.iter().flat_map(|&s| [s, s]).collect(),
         2 => samples.to_vec(),
-        n => samples
-            .chunks(n)
+        // FL FR FC LFE (BL BR) (SL SR)
+        6 | 8 => samples
+            .chunks_exact(channels)
             .flat_map(|f| {
-                // Simple downmix: front left/right plus half of the rest.
+                let (mut l, mut r) = (f[0] + H * f[2] + H * f[4], f[1] + H * f[2] + H * f[5]);
+                if channels == 8 {
+                    l += H * f[6];
+                    r += H * f[7];
+                }
+                let norm = if channels == 8 { 1.0 + 3.0 * H } else { 1.0 + 2.0 * H };
+                l /= norm;
+                r /= norm;
+                [l, r]
+            })
+            .collect(),
+        n => samples
+            .chunks_exact(n)
+            .flat_map(|f| {
+                // other layouts: front pair plus an even share of the rest
                 let rest: f32 = f[2..].iter().sum::<f32>() * 0.5 / (n - 2) as f32;
                 [
                     (f[0] + rest).clamp(-1.0, 1.0),
@@ -950,4 +1273,3 @@ fn to_stereo(samples: &[f32], channels: usize) -> Vec<f32> {
             .collect(),
     }
 }
-
